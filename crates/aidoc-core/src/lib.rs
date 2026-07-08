@@ -35,6 +35,7 @@ pub mod config;
 pub mod error;
 pub mod generate;
 pub mod index;
+pub mod lint;
 mod rustdoc;
 
 pub use config::{Config, Preset};
