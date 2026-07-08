@@ -10,9 +10,9 @@ license = "MIT OR Apache-2.0"
 description = "Generate LLM-facing doc artifacts (llms.txt / markdown / machine JSON) from rustdoc JSON"
 
 [workspace.dependencies]
-aidoc-core = { path = "crates/aidoc-core" }
-cargo-aidoc = { path = "crates/cargo-aidoc" }
-aidoc-mcp = { path = "crates/aidoc-mcp" }
+aidoc-core = { path = "crates/aidoc-core", version = "0.1.0" }
+cargo-aidoc = { path = "crates/cargo-aidoc", version = "0.1.0" }
+aidoc-mcp = { path = "crates/aidoc-mcp", version = "0.1.0" }
 
 # External dependencies
 cargo_metadata = "0.23"

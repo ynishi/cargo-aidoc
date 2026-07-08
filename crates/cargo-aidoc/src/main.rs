@@ -96,7 +96,9 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
     let workspace_root = cli
         .workspace_root
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let out_dir = cli.out_dir.unwrap_or_else(|| workspace_root.join("docs/aidoc"));
+    let out_dir = cli
+        .out_dir
+        .unwrap_or_else(|| workspace_root.join("docs/aidoc"));
 
     let platforms: Vec<Platform> = cli
         .platform

@@ -88,7 +88,9 @@ impl AidocServer {
         let envelope = tokio::task::spawn_blocking(move || run_pipeline(params, false))
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        Ok(text_result(serde_json::to_value(&envelope).unwrap_or_default()))
+        Ok(text_result(
+            serde_json::to_value(&envelope).unwrap_or_default(),
+        ))
     }
 
     /// Run the pipeline and diff against the on-disk copy without
@@ -101,7 +103,9 @@ impl AidocServer {
         let envelope = tokio::task::spawn_blocking(move || run_pipeline(params, true))
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        Ok(text_result(serde_json::to_value(&envelope).unwrap_or_default()))
+        Ok(text_result(
+            serde_json::to_value(&envelope).unwrap_or_default(),
+        ))
     }
 }
 
@@ -211,7 +215,10 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
         };
         let ok = diffs.is_empty() && !report.has_errors();
         let summary = if diffs.is_empty() {
-            format!("aidoc: check clean ({} artifact(s))", report.artifacts.len())
+            format!(
+                "aidoc: check clean ({} artifact(s))",
+                report.artifacts.len()
+            )
         } else {
             format!("aidoc: {} artifact(s) would change", diffs.len())
         };
