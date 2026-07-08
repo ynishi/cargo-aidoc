@@ -1,10 +1,18 @@
 //! Generate stage: project an [`IndexedWorkspace`] into LLM-facing
 //! artifacts.
 //!
-//! Each artifact has its own render function. The Preset::Publish set
-//! calls these in a fixed order (`llms.txt`, per-crate markdown,
-//! `llms-full.txt`, `api/<crate>.json`). At this point only `llms.txt`
-//! is implemented; other renderers land in follow-up phases.
+//! The Preset::Publish set produces four artifact families:
+//!
+//! - `llms.txt` (top-level index, [llmstxt.org](https://llmstxt.org))
+//! - `<crate>/index.md` (narrative for each crate root)
+//! - `<crate>/<module>.md` (narrative + public-item reference per module)
+//! - `llms-full.txt` (all markdown concatenated, chunk-delimited)
+//!
+//! Each artifact has its own render function; [`render_all`] wires them
+//! together and returns a deterministic list of `(relative_path, body)`
+//! pairs the caller can write to disk (or diff against a checked-in
+//! tree in `--check` mode). The generate stage never touches the
+//! filesystem itself.
 
 use std::fmt::Write as _;
 
@@ -12,12 +20,63 @@ use rustdoc_types::{Item, ItemEnum, Module, Visibility};
 
 use crate::index::{IndexedCrate, IndexedWorkspace};
 
+/// One generated artifact ready to be written to disk.
+///
+/// The `path` is relative to the output directory chosen by the caller
+/// (typically `<repo>/docs/aidoc/`). The `body` is the exact bytes to
+/// write; the renderer already appended a trailing newline where the
+/// artifact family expects one.
+#[derive(Debug, Clone)]
+pub struct Artifact {
+    /// Path relative to the output directory (uses forward slashes).
+    pub path: String,
+    /// Full file contents.
+    pub body: String,
+}
+
+/// Render every artifact in the Preset::Publish set for a workspace.
+///
+/// The returned artifacts appear in a stable order: `llms.txt` first,
+/// then `<crate>/index.md` and `<crate>/<module>.md` for each crate in
+/// discovery order, and finally `llms-full.txt`. Callers that want to
+/// write only a subset can filter by `path`.
+pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Vec<Artifact> {
+    let mut artifacts = Vec::new();
+
+    artifacts.push(Artifact {
+        path: "llms.txt".to_owned(),
+        body: render_llms_txt(workspace, title),
+    });
+
+    for krate in &workspace.crates {
+        let slug = crate_slug(&krate.name);
+        artifacts.push(Artifact {
+            path: format!("{slug}/index.md"),
+            body: render_crate_index(krate),
+        });
+
+        for module in public_modules(krate) {
+            artifacts.push(Artifact {
+                path: format!("{slug}/{}.md", module_slug(&module.path)),
+                body: render_module(krate, &module),
+            });
+        }
+    }
+
+    artifacts.push(Artifact {
+        path: "llms-full.txt".to_owned(),
+        body: render_llms_full(&artifacts),
+    });
+
+    artifacts
+}
+
 /// Render the top-level `llms.txt` index for a workspace.
 ///
 /// The output follows the [llmstxt.org](https://llmstxt.org) structure:
 /// an H1 title, an optional blockquote summary, then one H2 section per
 /// crate whose bullet list points at the per-crate / per-module markdown
-/// documents that the narrative renderer will emit later.
+/// documents that the narrative renderer emits.
 ///
 /// The `title` argument overrides the default heading (which is the
 /// basename of the workspace root). Pass `None` to accept the default.
@@ -59,14 +118,13 @@ pub fn render_llms_txt(workspace: &IndexedWorkspace, title: Option<&str>) -> Str
                 .docs
                 .and_then(first_line)
                 .unwrap_or("(no module-level documentation)");
-            let module_slug = module_slug(&module.path);
             writeln!(
                 &mut out,
                 "- [{name}::{path}]({slug}/{module_slug}.md): {summary}",
                 name = krate.name,
                 path = module.path,
                 slug = crate_slug,
-                module_slug = module_slug,
+                module_slug = module_slug(&module.path),
                 summary = module_summary,
             )
             .unwrap();
@@ -77,7 +135,111 @@ pub fn render_llms_txt(workspace: &IndexedWorkspace, title: Option<&str>) -> Str
     out
 }
 
-/// Fall-back workspace heading when the caller didn't override.
+/// Render the per-crate `index.md` narrative document.
+///
+/// The document contains the full crate-root doc comment followed by a
+/// module list. Missing docs show a short placeholder so downstream
+/// readers can tell "no docs" from "docs deliberately empty".
+pub fn render_crate_index(krate: &IndexedCrate) -> String {
+    let mut out = String::new();
+    writeln!(&mut out, "# {} {}", krate.name, krate.version).unwrap();
+    out.push('\n');
+
+    match krate.root_module_doc.as_deref() {
+        Some(doc) => {
+            out.push_str(doc);
+            if !doc.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        None => {
+            out.push_str("_This crate has no crate-root documentation._\n\n");
+        }
+    }
+
+    let modules = public_modules(krate);
+    if !modules.is_empty() {
+        writeln!(&mut out, "## Modules").unwrap();
+        out.push('\n');
+        for module in &modules {
+            let module_summary = module
+                .docs
+                .and_then(first_line)
+                .unwrap_or("(no module-level documentation)");
+            writeln!(
+                &mut out,
+                "- [`{path}`]({slug}.md): {summary}",
+                path = module.path,
+                slug = module_slug(&module.path),
+                summary = module_summary,
+            )
+            .unwrap();
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+/// Render the per-module narrative document.
+///
+/// Each module document contains the module-level doc comment followed by
+/// a public-item reference organised by kind (functions, types, traits,
+/// constants, macros). Item summaries are the first non-empty line of the
+/// corresponding doc comment; items with no docs show a placeholder.
+pub fn render_module(krate: &IndexedCrate, module: &PublicModule<'_>) -> String {
+    let mut out = String::new();
+    writeln!(&mut out, "# {}::{}", krate.name, module.path).unwrap();
+    out.push('\n');
+
+    match module.docs {
+        Some(doc) => {
+            out.push_str(doc);
+            if !doc.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        None => {
+            out.push_str("_This module has no module-level documentation._\n\n");
+        }
+    }
+
+    let items = module_items(krate, module);
+    render_item_group(&mut out, "Functions", ItemKind::Function, &items);
+    render_item_group(&mut out, "Types", ItemKind::Type, &items);
+    render_item_group(&mut out, "Traits", ItemKind::Trait, &items);
+    render_item_group(&mut out, "Constants", ItemKind::Constant, &items);
+    render_item_group(&mut out, "Macros", ItemKind::Macro, &items);
+
+    out
+}
+
+/// Render `llms-full.txt`: every markdown artifact concatenated, with a
+/// short header before each chunk so the reader can identify boundaries.
+///
+/// This intentionally skips non-markdown artifacts (`llms.txt` itself and
+/// any future JSON payloads) — those already have their own well-known
+/// paths, and duplicating them here would only bloat the file.
+pub fn render_llms_full(artifacts: &[Artifact]) -> String {
+    let mut out = String::new();
+    for artifact in artifacts {
+        if !artifact.path.ends_with(".md") {
+            continue;
+        }
+        writeln!(&mut out, "<!-- {} -->", artifact.path).unwrap();
+        out.push_str(&artifact.body);
+        if !artifact.body.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+// -------- helpers --------
+
 fn workspace_title(workspace: &IndexedWorkspace) -> String {
     workspace
         .root
@@ -87,8 +249,6 @@ fn workspace_title(workspace: &IndexedWorkspace) -> String {
         .unwrap_or_else(|| "workspace".to_owned())
 }
 
-/// The first line of the first crate's root doc, if any. Used as the
-/// blockquote summary under the workspace title.
 fn workspace_summary(workspace: &IndexedWorkspace) -> Option<&str> {
     let raw = workspace
         .crates
@@ -97,34 +257,29 @@ fn workspace_summary(workspace: &IndexedWorkspace) -> Option<&str> {
     first_line(raw)
 }
 
-/// The lowercase, dash-free crate slug used for on-disk paths in the
-/// generated tree.
 fn crate_slug(name: &str) -> String {
     name.replace('-', "_")
 }
 
-/// A dotted module path (e.g. `config`, `net::tcp`) rendered as a
-/// filesystem-safe slug (`config`, `net__tcp`).
 fn module_slug(path: &str) -> String {
     path.replace("::", "__")
 }
 
-/// Return the first non-empty line of a doc comment, trimmed. Used to
-/// derive short summaries for link bullet lists.
 fn first_line(doc: &str) -> Option<&str> {
     doc.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
-/// A public module surfaced under a crate root, with its dotted path
-/// (`config::merge`) and its own doc comment.
-struct PublicModule<'a> {
-    path: String,
-    docs: Option<&'a str>,
+/// A public module surfaced under a crate root.
+#[derive(Debug, Clone)]
+pub struct PublicModule<'a> {
+    /// Dotted module path (`config`, `net::tcp`).
+    pub path: String,
+    /// The module's own doc comment, if any.
+    pub docs: Option<&'a str>,
+    /// The rustdoc id of the module item, used to look up its children.
+    id: rustdoc_types::Id,
 }
 
-/// Enumerate all public modules reachable from the crate root, depth-first.
-/// The crate root itself is not included (it's rendered separately as the
-/// crate overview link).
 fn public_modules(krate: &IndexedCrate) -> Vec<PublicModule<'_>> {
     let mut out = Vec::new();
     let index = &krate.crate_data.index;
@@ -169,8 +324,92 @@ fn walk_module<'a>(
         out.push(PublicModule {
             path: path.clone(),
             docs: child.docs.as_deref(),
+            id: *child_id,
         });
 
         walk_module(index, child_module, path, out);
     }
+}
+
+/// Classification of a public item for grouping under module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemKind {
+    Function,
+    Type,
+    Trait,
+    Constant,
+    Macro,
+}
+
+struct RenderedItem<'a> {
+    name: &'a str,
+    summary: &'a str,
+    kind: ItemKind,
+}
+
+fn classify(item: &Item) -> Option<ItemKind> {
+    match &item.inner {
+        ItemEnum::Function(_) => Some(ItemKind::Function),
+        ItemEnum::Struct(_) | ItemEnum::Enum(_) | ItemEnum::Union(_) | ItemEnum::TypeAlias(_) => {
+            Some(ItemKind::Type)
+        }
+        ItemEnum::Trait(_) => Some(ItemKind::Trait),
+        ItemEnum::Constant { .. } | ItemEnum::Static(_) => Some(ItemKind::Constant),
+        ItemEnum::Macro(_) | ItemEnum::ProcMacro(_) => Some(ItemKind::Macro),
+        _ => None,
+    }
+}
+
+fn module_items<'a>(krate: &'a IndexedCrate, module: &PublicModule<'_>) -> Vec<RenderedItem<'a>> {
+    let mut out = Vec::new();
+    let index = &krate.crate_data.index;
+
+    let Some(item) = index.get(&module.id) else {
+        return out;
+    };
+    let ItemEnum::Module(module_data) = &item.inner else {
+        return out;
+    };
+
+    for child_id in &module_data.items {
+        let Some(child) = index.get(child_id) else {
+            continue;
+        };
+        if !matches!(child.visibility, Visibility::Public) {
+            continue;
+        }
+        let Some(kind) = classify(child) else {
+            continue;
+        };
+        let Some(name) = child.name.as_deref() else {
+            continue;
+        };
+        let summary = child
+            .docs
+            .as_deref()
+            .and_then(first_line)
+            .unwrap_or("(no documentation)");
+        out.push(RenderedItem {
+            name,
+            summary,
+            kind,
+        });
+    }
+
+    // Deterministic within-kind order: alphabetic by name.
+    out.sort_by(|a, b| a.name.cmp(b.name));
+    out
+}
+
+fn render_item_group(out: &mut String, heading: &str, kind: ItemKind, items: &[RenderedItem<'_>]) {
+    let group: Vec<&RenderedItem<'_>> = items.iter().filter(|i| i.kind == kind).collect();
+    if group.is_empty() {
+        return;
+    }
+    writeln!(out, "## {heading}").unwrap();
+    out.push('\n');
+    for item in group {
+        writeln!(out, "- `{}` — {}", item.name, item.summary).unwrap();
+    }
+    out.push('\n');
 }
