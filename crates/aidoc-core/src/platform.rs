@@ -39,12 +39,41 @@ pub fn apply_overlays(
                 let _ = artifacts;
             }
             Platform::AnthropicStyle => {
-                // Phase 11: prepend a reverse cross-ref blockquote to
-                // each per-module .md artifact.
-                let _ = workspace;
-                let _ = artifacts;
+                apply_anthropic_style(artifacts);
             }
         }
     }
     Ok(())
+}
+
+/// Prepend a reverse cross-ref blockquote to every markdown artifact
+/// and to `llms-full.txt`, mirroring Anthropic's `platform.claude.com`
+/// docs layout where every `.md` mirror carries a hint back to the
+/// top-level index.
+///
+/// The link uses a filesystem-relative path (`../llms.txt` for
+/// per-crate / per-module pages, `llms.txt` for artifacts that live at
+/// the output root). A later phase can add a `--base-url` option to
+/// swap those relative paths for absolute URLs when the crate author
+/// knows the publish target.
+fn apply_anthropic_style(artifacts: &mut [Artifact]) {
+    for artifact in artifacts.iter_mut() {
+        if !is_markdown_target(&artifact.path) {
+            continue;
+        }
+        let link = if artifact.path.contains('/') {
+            "../llms.txt"
+        } else {
+            "llms.txt"
+        };
+        let hint = format!("> Fetch the complete documentation index at: {link}\n\n");
+        let mut new_body = String::with_capacity(hint.len() + artifact.body.len());
+        new_body.push_str(&hint);
+        new_body.push_str(&artifact.body);
+        artifact.body = new_body;
+    }
+}
+
+fn is_markdown_target(path: &str) -> bool {
+    path.ends_with(".md") || path == "llms-full.txt"
 }
