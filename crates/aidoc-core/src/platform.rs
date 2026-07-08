@@ -14,7 +14,7 @@
 
 use crate::config::Platform;
 use crate::error::Result;
-use crate::generate::Artifact;
+use crate::generate::{self, Artifact};
 use crate::index::IndexedWorkspace;
 
 /// Apply every overlay in `platforms` to `artifacts` in the order they
@@ -29,9 +29,8 @@ pub fn apply_overlays(
     for platform in platforms {
         match platform {
             Platform::Context7 => {
-                // Phase 10: emit context7.json at the repo root.
-                let _ = workspace;
-                let _ = artifacts;
+                let body = generate::render_context7_manifest(workspace);
+                artifacts.push(Artifact::in_workspace_root("context7.json", body));
             }
             Platform::DeepWiki => {
                 // Phase 12: emit .devin/wiki.json when the workspace

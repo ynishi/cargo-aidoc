@@ -196,7 +196,7 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
         .collect();
 
     if check {
-        let diffs = match aidoc_core::diff_report(&report, &out_dir) {
+        let diffs = match aidoc_core::diff_report(&report, &out_dir, &workspace_root) {
             Ok(d) => d,
             Err(err) => {
                 return Envelope {
@@ -224,7 +224,7 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
             error: None,
         }
     } else {
-        if let Err(err) = aidoc_core::write_report(&report, &out_dir) {
+        if let Err(err) = aidoc_core::write_report(&report, &out_dir, &workspace_root) {
             return Envelope {
                 ok: false,
                 summary: format!("aidoc: write failed: {err}"),

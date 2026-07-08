@@ -29,7 +29,7 @@
 
 #![warn(missing_docs)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub mod config;
 pub mod error;
@@ -41,7 +41,7 @@ mod rustdoc;
 
 pub use config::{Config, Platform, Preset, UnknownPlatform};
 pub use error::{Error, Result};
-pub use generate::Artifact;
+pub use generate::{Artifact, ArtifactLocation};
 pub use index::{IndexedCrate, IndexedWorkspace};
 pub use lint::{Diagnostic, Level};
 
@@ -97,16 +97,27 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
     })
 }
 
-/// Write every artifact in `report` under `out_dir`. Existing files are
-/// overwritten; parent directories are created as needed.
+/// Resolve where a single artifact lands, given the two possible base
+/// directories a caller might have configured.
+fn resolve_path(artifact: &Artifact, out_dir: &Path, workspace_root: &Path) -> PathBuf {
+    let base = match artifact.location {
+        ArtifactLocation::OutDir => out_dir,
+        ArtifactLocation::WorkspaceRoot => workspace_root,
+    };
+    base.join(&artifact.path)
+}
+
+/// Write every artifact in `report` to disk. `out_dir` is the base for
+/// artifacts whose location is [`ArtifactLocation::OutDir`]; the
+/// workspace root is the base for
+/// [`ArtifactLocation::WorkspaceRoot`] artifacts (typically platform
+/// manifests such as `context7.json`).
 ///
-/// This helper exists as a convenience for callers that want the default
-/// on-disk layout; front ends that need to project artifacts elsewhere
-/// (staging area, tar stream, MCP response envelope) can iterate
-/// `report.artifacts` themselves.
-pub fn write_report(report: &Report, out_dir: &Path) -> Result<()> {
+/// Existing files are overwritten; parent directories are created as
+/// needed.
+pub fn write_report(report: &Report, out_dir: &Path, workspace_root: &Path) -> Result<()> {
     for artifact in &report.artifacts {
-        let path = out_dir.join(&artifact.path);
+        let path = resolve_path(artifact, out_dir, workspace_root);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -115,18 +126,20 @@ pub fn write_report(report: &Report, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Compare every artifact in `report` against its on-disk counterpart in
-/// `out_dir` and return the list of paths whose contents differ (or that
-/// are missing on disk).
+/// Compare every artifact in `report` against its on-disk counterpart
+/// and return the list of paths whose contents differ (or that are
+/// missing on disk). See [`write_report`] for how `out_dir` and
+/// `workspace_root` are used.
 ///
 /// This is the check-mode counterpart of [`write_report`]: nothing is
 /// written; callers pick between exit code 0 (empty result) and 2
 /// (non-empty). Read failures other than "file not found" propagate as
-/// errors.
-pub fn diff_report(report: &Report, out_dir: &Path) -> Result<Vec<String>> {
+/// errors. The returned paths use each artifact's original
+/// (base-relative) form so callers can echo them without recomputing.
+pub fn diff_report(report: &Report, out_dir: &Path, workspace_root: &Path) -> Result<Vec<String>> {
     let mut diffs = Vec::new();
     for artifact in &report.artifacts {
-        let path = out_dir.join(&artifact.path);
+        let path = resolve_path(artifact, out_dir, workspace_root);
         match std::fs::read(&path) {
             Ok(bytes) => {
                 if bytes != artifact.body.as_bytes() {

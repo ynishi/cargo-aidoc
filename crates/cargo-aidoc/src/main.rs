@@ -120,7 +120,7 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
     print_diagnostics(&report);
 
     if cli.check {
-        let diffs = aidoc_core::diff_report(&report, &out_dir)?;
+        let diffs = aidoc_core::diff_report(&report, &out_dir, &workspace_root)?;
         if diffs.is_empty() {
             if report.has_errors() {
                 return Ok(ExitCode::from(2));
@@ -133,7 +133,7 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
         }
         Ok(ExitCode::from(2))
     } else {
-        aidoc_core::write_report(&report, &out_dir)?;
+        aidoc_core::write_report(&report, &out_dir, &workspace_root)?;
         eprintln!(
             "cargo-aidoc: wrote {} artifact(s) to {}",
             report.artifacts.len(),

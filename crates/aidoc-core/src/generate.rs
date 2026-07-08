@@ -25,16 +25,59 @@ use crate::index::{IndexedCrate, IndexedWorkspace};
 
 /// One generated artifact ready to be written to disk.
 ///
-/// The `path` is relative to the output directory chosen by the caller
-/// (typically `<repo>/docs/aidoc/`). The `body` is the exact bytes to
+/// The `path` is relative to the base directory chosen by
+/// [`location`](Self::location). The `body` is the exact bytes to
 /// write; the renderer already appended a trailing newline where the
 /// artifact family expects one.
 #[derive(Debug, Clone)]
 pub struct Artifact {
-    /// Path relative to the output directory (uses forward slashes).
+    /// Which base directory `path` is relative to.
+    pub location: ArtifactLocation,
+    /// Path relative to the artifact's base directory (uses forward
+    /// slashes).
     pub path: String,
     /// Full file contents.
     pub body: String,
+}
+
+/// Which base directory an [`Artifact`]'s path is relative to.
+///
+/// Core `Preset::Publish` output goes into [`OutDir`](Self::OutDir).
+/// Platform overlays that need to place a manifest at the repository
+/// root (e.g. `context7.json`, `.devin/wiki.json`) use
+/// [`WorkspaceRoot`](Self::WorkspaceRoot) so callers know not to
+/// collapse them under `out_dir`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtifactLocation {
+    /// Path is relative to `Config::out_dir`
+    /// (default `<workspace>/docs/aidoc/`).
+    #[default]
+    OutDir,
+    /// Path is relative to the workspace root (the parent of the
+    /// top-level `Cargo.toml`).
+    WorkspaceRoot,
+}
+
+impl Artifact {
+    /// Convenience constructor for artifacts that land under
+    /// `Config::out_dir`.
+    pub fn in_out_dir(path: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            location: ArtifactLocation::OutDir,
+            path: path.into(),
+            body: body.into(),
+        }
+    }
+
+    /// Convenience constructor for artifacts that land at the
+    /// workspace root (typically platform manifests).
+    pub fn in_workspace_root(path: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            location: ArtifactLocation::WorkspaceRoot,
+            path: path.into(),
+            body: body.into(),
+        }
+    }
 }
 
 /// Render every artifact in the Preset::Publish set for a workspace.
@@ -47,37 +90,37 @@ pub struct Artifact {
 pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Result<Vec<Artifact>> {
     let mut artifacts = Vec::new();
 
-    artifacts.push(Artifact {
-        path: "llms.txt".to_owned(),
-        body: render_llms_txt(workspace, title),
-    });
+    artifacts.push(Artifact::in_out_dir(
+        "llms.txt",
+        render_llms_txt(workspace, title),
+    ));
 
     for krate in &workspace.crates {
         let slug = crate_slug(&krate.name);
-        artifacts.push(Artifact {
-            path: format!("{slug}/index.md"),
-            body: render_crate_index(krate),
-        });
+        artifacts.push(Artifact::in_out_dir(
+            format!("{slug}/index.md"),
+            render_crate_index(krate),
+        ));
 
         for module in public_modules(krate) {
-            artifacts.push(Artifact {
-                path: format!("{slug}/{}.md", module_slug(&module.path)),
-                body: render_module(krate, &module),
-            });
+            artifacts.push(Artifact::in_out_dir(
+                format!("{slug}/{}.md", module_slug(&module.path)),
+                render_module(krate, &module),
+            ));
         }
     }
 
     for krate in &workspace.crates {
-        artifacts.push(Artifact {
-            path: format!("api/{}.json", crate_slug(&krate.name)),
-            body: render_api_json(krate)?,
-        });
+        artifacts.push(Artifact::in_out_dir(
+            format!("api/{}.json", crate_slug(&krate.name)),
+            render_api_json(krate)?,
+        ));
     }
 
-    artifacts.push(Artifact {
-        path: "llms-full.txt".to_owned(),
-        body: render_llms_full(&artifacts),
-    });
+    artifacts.push(Artifact::in_out_dir(
+        "llms-full.txt",
+        render_llms_full(&artifacts),
+    ));
 
     Ok(artifacts)
 }
@@ -247,6 +290,58 @@ pub fn render_llms_full(artifacts: &[Artifact]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Render a [Context7](https://context7.com) manifest (`context7.json`)
+/// for a workspace.
+///
+/// Emits the minimum useful field set: `$schema`, `projectTitle`,
+/// `description` (first non-empty line of the first crate's root doc,
+/// truncated to Context7's 10-200 character range), and `folders`
+/// (pointing at cargo-aidoc's default output tree). Callers place the
+/// returned body at the workspace root; the [`crate::platform`]
+/// dispatcher wires this up when [`crate::Platform::Context7`] is
+/// selected.
+pub fn render_context7_manifest(workspace: &IndexedWorkspace) -> String {
+    let manifest = Context7Manifest {
+        schema: "https://context7.com/schema/context7.json",
+        project_title: workspace_title(workspace),
+        description: workspace_summary(workspace).and_then(clamp_description),
+        folders: vec!["docs/aidoc".to_owned()],
+    };
+    let json = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| String::from("{}"));
+    format!("{json}\n")
+}
+
+#[derive(Serialize)]
+struct Context7Manifest {
+    #[serde(rename = "$schema")]
+    schema: &'static str,
+    #[serde(rename = "projectTitle")]
+    project_title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    folders: Vec<String>,
+}
+
+/// Truncate / drop a description string to fit Context7's 10-200 char
+/// contract. Under 10 characters gets dropped (Context7 rejects short
+/// descriptions); over 200 gets truncated to 199 + `…`.
+fn clamp_description(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let char_count = trimmed.chars().count();
+    if char_count < 10 {
+        return None;
+    }
+    if char_count <= 200 {
+        return Some(trimmed.to_owned());
+    }
+    let mut out = String::with_capacity(200);
+    for ch in trimmed.chars().take(199) {
+        out.push(ch);
+    }
+    out.push('…');
+    Some(out)
 }
 
 /// Render the deterministic public-API surface JSON for a single crate.
