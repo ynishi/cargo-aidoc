@@ -7,3 +7,8 @@ license.workspace = true
 description = "Core library for cargo-aidoc: rustdoc JSON -> LLM-facing doc artifact pipeline"
 
 [dependencies]
+cargo_metadata = { workspace = true }
+rustdoc-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

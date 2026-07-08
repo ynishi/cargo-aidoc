@@ -25,7 +25,16 @@
 //! ends over this pipeline; neither crate should contain pipeline logic of
 //! its own.
 //!
-//! This crate is currently a scaffold: the public API described above is
-//! not implemented yet.
+//! This crate is currently a scaffold: the two-stage pipeline is not yet
+//! implemented; only the shared type definitions ([`Config`], [`Error`],
+//! [`IndexedCrate`], [`IndexedWorkspace`]) are in place.
 
 #![warn(missing_docs)]
+
+pub mod config;
+pub mod error;
+pub mod index;
+
+pub use config::{Config, Preset};
+pub use error::{Error, Result};
+pub use index::{IndexedCrate, IndexedWorkspace};
