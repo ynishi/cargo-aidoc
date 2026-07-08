@@ -33,10 +33,8 @@ pub fn apply_overlays(
                 artifacts.push(Artifact::in_workspace_root("context7.json", body));
             }
             Platform::DeepWiki => {
-                // Phase 12: emit .devin/wiki.json when the workspace
-                // is large enough to warrant it.
-                let _ = workspace;
-                let _ = artifacts;
+                let body = generate::render_deepwiki_manifest(workspace);
+                artifacts.push(Artifact::in_workspace_root(".devin/wiki.json", body));
             }
             Platform::AnthropicStyle => {
                 apply_anthropic_style(artifacts);

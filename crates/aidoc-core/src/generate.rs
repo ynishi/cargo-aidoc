@@ -344,6 +344,87 @@ fn clamp_description(raw: &str) -> Option<String> {
     Some(out)
 }
 
+/// Render a [DeepWiki](https://deepwiki.com) manifest (`.devin/wiki.json`)
+/// for a workspace.
+///
+/// Emits `repo_notes` (a single workspace-overview note built from the
+/// first crate root doc) and `pages[]` (one page per crate, plus a
+/// workspace root page whose children point at each crate). Modules
+/// are intentionally left out of the page list at v0.1: DeepWiki's
+/// default page cap is 30, and generating a page per module tends to
+/// exceed that on multi-crate workspaces without adding much wiki
+/// signal. A `--deepwiki-expand` option that walks modules is left as
+/// a follow-up phase.
+///
+/// The output is hard-capped at 30 pages so callers that pass
+/// unusually large workspaces still produce a spec-valid manifest;
+/// dropped crates are silently truncated rather than errored on
+/// (DeepWiki auto-crawl still covers them via GitHub).
+pub fn render_deepwiki_manifest(workspace: &IndexedWorkspace) -> String {
+    const DEEPWIKI_PAGE_CAP: usize = 30;
+
+    let workspace_name = workspace_title(workspace);
+    let workspace_summary_line = workspace_summary(workspace);
+
+    let mut pages = Vec::new();
+    pages.push(DeepWikiPage {
+        title: workspace_name.clone(),
+        purpose: match workspace_summary_line {
+            Some(s) => format!("Workspace overview: {s}"),
+            None => "Workspace overview.".to_owned(),
+        },
+        parent: None,
+    });
+
+    for krate in &workspace.crates {
+        let crate_summary = krate
+            .root_module_doc
+            .as_deref()
+            .and_then(first_line)
+            .unwrap_or("(no crate documentation)");
+        pages.push(DeepWikiPage {
+            title: format!("crate:{}", krate.name),
+            purpose: format!("{}: {crate_summary}", krate.name),
+            parent: Some(workspace_name.clone()),
+        });
+    }
+
+    pages.truncate(DEEPWIKI_PAGE_CAP);
+
+    let repo_notes = vec![DeepWikiNote {
+        content: match workspace_summary_line {
+            Some(s) => format!("Workspace `{workspace_name}` — {s}"),
+            None => format!("Workspace `{workspace_name}`."),
+        },
+        author: None,
+    }];
+
+    let manifest = DeepWikiManifest { repo_notes, pages };
+    let json = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| String::from("{}"));
+    format!("{json}\n")
+}
+
+#[derive(Serialize)]
+struct DeepWikiManifest {
+    repo_notes: Vec<DeepWikiNote>,
+    pages: Vec<DeepWikiPage>,
+}
+
+#[derive(Serialize)]
+struct DeepWikiNote {
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DeepWikiPage {
+    title: String,
+    purpose: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+}
+
 /// Render the deterministic public-API surface JSON for a single crate.
 ///
 /// The document intentionally excludes non-public items, unnameable
