@@ -1,0 +1,9 @@
+[package]
+name = "aidoc-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core library for cargo-aidoc: rustdoc JSON -> LLM-facing doc artifact pipeline"
+
+[dependencies]

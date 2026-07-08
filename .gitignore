@@ -1,0 +1,21 @@
+# Pipeline infrastructure
+workspace
+.worktrees
+.claude
+.mcp.json
+
+# Rust build artifacts
+target
+.ryo
+
+# Danger files (Outline Book: danger-files)
+*.db*
+*.sqlite*
+.env*
+/Users/[^/]+/
+/home/[^/]+/
+~/[^[:space:]]+
+!.env.example
+!.env.sample
+!.env.template
+!.env.dist

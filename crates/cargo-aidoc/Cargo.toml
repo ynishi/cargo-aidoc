@@ -1,0 +1,13 @@
+[package]
+name = "cargo-aidoc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "cargo subcommand: generate LLM-facing doc artifacts from rustdoc JSON"
+
+[[bin]]
+name = "cargo-aidoc"
+path = "src/main.rs"
+
+[dependencies]

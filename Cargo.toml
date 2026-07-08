@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Yutaka Nishimura <ytk.nishimura@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Generate LLM-facing doc artifacts (llms.txt / markdown / machine JSON) from rustdoc JSON"
+
+[workspace.dependencies]
+aidoc-core = { path = "crates/aidoc-core" }
+cargo-aidoc = { path = "crates/cargo-aidoc" }
+aidoc-mcp = { path = "crates/aidoc-mcp" }

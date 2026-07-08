@@ -1,0 +1,13 @@
+[package]
+name = "aidoc-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "MCP server exposing cargo-aidoc's doc-generation pipeline as tools"
+
+[[bin]]
+name = "aidoc-mcp"
+path = "src/main.rs"
+
+[dependencies]
