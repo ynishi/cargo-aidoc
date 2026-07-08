@@ -34,6 +34,14 @@ pub struct Config {
     /// Crate names to skip when enumerating the workspace. Sourced from
     /// `[workspace.metadata.aidoc].exclude`.
     pub exclude: Vec<String>,
+
+    /// External LLM-doc platforms to emit overlay artifacts for.
+    ///
+    /// Each entry adds platform-specific files on top of the core
+    /// `docs/aidoc/` output (e.g. `context7.json` at the repo root for
+    /// [`Platform::Context7`]). See the `platform` module for what each
+    /// overlay emits.
+    pub platforms: Vec<Platform>,
 }
 
 impl Default for Config {
@@ -44,6 +52,7 @@ impl Default for Config {
             strict: false,
             check: false,
             exclude: Vec::new(),
+            platforms: Vec::new(),
         }
     }
 }
@@ -56,3 +65,66 @@ pub enum Preset {
     /// deterministic `api/<crate>.json`.
     Publish,
 }
+
+/// External LLM-doc platform this crate can emit overlay artifacts for.
+///
+/// Each variant maps to a small set of extra files (typically a
+/// platform manifest at the repo root) that a downstream service
+/// consumes. Layouts and required fields are captured in the
+/// `platform` module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    /// [Context7](https://context7.com): manual-submit + GitHub Action
+    /// service. Overlay emits `context7.json` at the repo root
+    /// (`projectTitle`, `description`, `folders`, `branch`).
+    Context7,
+    /// [DeepWiki](https://deepwiki.com): auto-crawl service. Overlay
+    /// emits `.devin/wiki.json` at the repo root for workspaces large
+    /// enough to hit DeepWiki's page-count limit.
+    DeepWiki,
+    /// Anthropic-style: `.md` page mirror + reverse cross-ref hint
+    /// pointing back at the workspace `llms.txt`. Modifies existing
+    /// per-module `.md` artifacts in place; adds no new files.
+    AnthropicStyle,
+}
+
+impl Platform {
+    /// The name expected by the CLI (`--platform <name>`) and by any
+    /// future configuration parser.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Context7 => "context7",
+            Self::DeepWiki => "deepwiki",
+            Self::AnthropicStyle => "anthropic-style",
+        }
+    }
+}
+
+impl std::str::FromStr for Platform {
+    type Err = UnknownPlatform;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "context7" => Ok(Self::Context7),
+            "deepwiki" => Ok(Self::DeepWiki),
+            "anthropic-style" => Ok(Self::AnthropicStyle),
+            other => Err(UnknownPlatform(other.to_owned())),
+        }
+    }
+}
+
+/// Returned by [`Platform::from_str`] when the input doesn't match any
+/// known platform name.
+#[derive(Debug, Clone)]
+pub struct UnknownPlatform(pub String);
+
+impl std::fmt::Display for UnknownPlatform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown platform `{}`; expected one of: context7, deepwiki, anthropic-style",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownPlatform {}

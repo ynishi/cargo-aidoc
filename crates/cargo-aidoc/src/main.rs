@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use aidoc_core::{Config, Level, Report};
+use aidoc_core::{Config, Level, Platform, Report};
 use clap::Parser;
 
 /// Generate LLM-facing documentation artifacts from rustdoc JSON.
@@ -43,6 +43,12 @@ struct Cli {
     /// non-zero exit code.
     #[arg(long)]
     strict: bool,
+
+    /// External LLM-doc platform overlays to emit on top of the core
+    /// output. Accepts a comma-separated list or can be repeated.
+    /// Known values: `context7`, `deepwiki`, `anthropic-style`.
+    #[arg(long, value_delimiter = ',', value_name = "NAME")]
+    platform: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -92,10 +98,20 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let out_dir = cli.out_dir.unwrap_or_else(|| workspace_root.join("docs/aidoc"));
 
+    let platforms: Vec<Platform> = cli
+        .platform
+        .iter()
+        .map(|s| s.parse::<Platform>())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| aidoc_core::Error::Config {
+            message: e.to_string(),
+        })?;
+
     let config = Config {
         strict: cli.strict,
         check: cli.check,
         out_dir: out_dir.clone(),
+        platforms,
         ..Config::default()
     };
 

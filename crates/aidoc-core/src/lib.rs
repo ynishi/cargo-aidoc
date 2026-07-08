@@ -36,9 +36,10 @@ pub mod error;
 pub mod generate;
 pub mod index;
 pub mod lint;
+pub mod platform;
 mod rustdoc;
 
-pub use config::{Config, Preset};
+pub use config::{Config, Platform, Preset, UnknownPlatform};
 pub use error::{Error, Result};
 pub use generate::Artifact;
 pub use index::{IndexedCrate, IndexedWorkspace};
@@ -80,10 +81,13 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
     let workspace = IndexedWorkspace::build(workspace_root, config)?;
     let index_summary = format!("indexed {} crate(s)", workspace.crates.len());
 
-    let artifacts = generate::render_all(&workspace, None).map_err(|source| Error::Generate {
-        source: Box::new(source),
-        index_summary,
-    })?;
+    let mut artifacts =
+        generate::render_all(&workspace, None).map_err(|source| Error::Generate {
+            source: Box::new(source),
+            index_summary,
+        })?;
+
+    platform::apply_overlays(&workspace, &mut artifacts, &config.platforms)?;
 
     let diagnostics = lint::lint(&workspace, &artifacts, config);
 
