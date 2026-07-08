@@ -34,6 +34,7 @@
 pub mod config;
 pub mod error;
 pub mod index;
+mod rustdoc;
 
 pub use config::{Config, Preset};
 pub use error::{Error, Result};
