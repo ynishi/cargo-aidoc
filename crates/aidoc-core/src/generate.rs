@@ -1,12 +1,13 @@
 //! Generate stage: project an [`IndexedWorkspace`] into LLM-facing
 //! artifacts.
 //!
-//! The Preset::Publish set produces four artifact families:
+//! The Preset::Publish set produces five artifact families:
 //!
 //! - `llms.txt` (top-level index, [llmstxt.org](https://llmstxt.org))
 //! - `<crate>/index.md` (narrative for each crate root)
 //! - `<crate>/<module>.md` (narrative + public-item reference per module)
 //! - `llms-full.txt` (all markdown concatenated, chunk-delimited)
+//! - `api/<crate>.json` (deterministic public-API surface)
 //!
 //! Each artifact has its own render function; [`render_all`] wires them
 //! together and returns a deterministic list of `(relative_path, body)`
@@ -17,7 +18,9 @@
 use std::fmt::Write as _;
 
 use rustdoc_types::{Item, ItemEnum, Module, Visibility};
+use serde::Serialize;
 
+use crate::error::Result;
 use crate::index::{IndexedCrate, IndexedWorkspace};
 
 /// One generated artifact ready to be written to disk.
@@ -38,9 +41,10 @@ pub struct Artifact {
 ///
 /// The returned artifacts appear in a stable order: `llms.txt` first,
 /// then `<crate>/index.md` and `<crate>/<module>.md` for each crate in
-/// discovery order, and finally `llms-full.txt`. Callers that want to
-/// write only a subset can filter by `path`.
-pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Vec<Artifact> {
+/// discovery order, then `api/<crate>.json` for each crate, and finally
+/// `llms-full.txt`. Callers that want to write only a subset can filter
+/// by `path`.
+pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Result<Vec<Artifact>> {
     let mut artifacts = Vec::new();
 
     artifacts.push(Artifact {
@@ -63,12 +67,19 @@ pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Vec<Arti
         }
     }
 
+    for krate in &workspace.crates {
+        artifacts.push(Artifact {
+            path: format!("api/{}.json", crate_slug(&krate.name)),
+            body: render_api_json(krate)?,
+        });
+    }
+
     artifacts.push(Artifact {
         path: "llms-full.txt".to_owned(),
         body: render_llms_full(&artifacts),
     });
 
-    artifacts
+    Ok(artifacts)
 }
 
 /// Render the top-level `llms.txt` index for a workspace.
@@ -236,6 +247,103 @@ pub fn render_llms_full(artifacts: &[Artifact]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Render the deterministic public-API surface JSON for a single crate.
+///
+/// The document intentionally excludes non-public items, unnameable
+/// items (impls, imports, associated items), and any information that
+/// changes across rustdoc runs without corresponding source changes
+/// (spans, IDs, etc.). Callers use this as the check target for
+/// `--check --strict`: if two runs produce different JSON, something in
+/// the crate's public surface actually moved.
+///
+/// Items are sorted lexicographically by path so diffs read cleanly.
+pub fn render_api_json(krate: &IndexedCrate) -> Result<String> {
+    let mut items = Vec::new();
+    let index = &krate.crate_data.index;
+
+    if let Some(root_item) = index.get(&krate.crate_data.root)
+        && let ItemEnum::Module(root_module) = &root_item.inner
+    {
+        let crate_prefix = crate_slug(&krate.name);
+        walk_api_items(index, root_module, crate_prefix, &mut items);
+    }
+
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let surface = ApiSurface {
+        krate: krate.name.clone(),
+        version: krate.version.clone(),
+        items,
+    };
+    let json = serde_json::to_string_pretty(&surface)?;
+    Ok(format!("{json}\n"))
+}
+
+#[derive(Serialize)]
+struct ApiSurface {
+    #[serde(rename = "crate")]
+    krate: String,
+    version: String,
+    items: Vec<ApiItem>,
+}
+
+#[derive(Serialize)]
+struct ApiItem {
+    path: String,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    docs: Option<String>,
+}
+
+fn walk_api_items(
+    index: &std::collections::HashMap<rustdoc_types::Id, Item>,
+    module: &Module,
+    prefix: String,
+    out: &mut Vec<ApiItem>,
+) {
+    for child_id in &module.items {
+        let Some(child) = index.get(child_id) else {
+            continue;
+        };
+        if !matches!(child.visibility, Visibility::Public) {
+            continue;
+        }
+        let Some(name) = child.name.as_deref() else {
+            continue;
+        };
+        let path = format!("{prefix}::{name}");
+
+        if let Some(kind) = api_kind(&child.inner) {
+            out.push(ApiItem {
+                path: path.clone(),
+                kind,
+                docs: child.docs.clone(),
+            });
+        }
+
+        if let ItemEnum::Module(child_module) = &child.inner {
+            walk_api_items(index, child_module, path, out);
+        }
+    }
+}
+
+fn api_kind(inner: &ItemEnum) -> Option<&'static str> {
+    match inner {
+        ItemEnum::Module(_) => Some("module"),
+        ItemEnum::Function(_) => Some("function"),
+        ItemEnum::Struct(_) => Some("struct"),
+        ItemEnum::Enum(_) => Some("enum"),
+        ItemEnum::Union(_) => Some("union"),
+        ItemEnum::Trait(_) => Some("trait"),
+        ItemEnum::TypeAlias(_) => Some("type_alias"),
+        ItemEnum::Constant { .. } => Some("constant"),
+        ItemEnum::Static(_) => Some("static"),
+        ItemEnum::Macro(_) => Some("macro"),
+        ItemEnum::ProcMacro(_) => Some("proc_macro"),
+        _ => None,
+    }
 }
 
 // -------- helpers --------
