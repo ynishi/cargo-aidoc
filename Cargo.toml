@@ -16,6 +16,7 @@ aidoc-mcp = { path = "crates/aidoc-mcp" }
 
 # External dependencies
 cargo_metadata = "0.23"
+clap = { version = "4", features = ["derive"] }
 rustdoc-types = "0.60"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

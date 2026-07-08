@@ -11,3 +11,5 @@ name = "cargo-aidoc"
 path = "src/main.rs"
 
 [dependencies]
+aidoc-core = { workspace = true }
+clap = { workspace = true }
