@@ -17,7 +17,3 @@ New design / architecture documentation lives in crate-root doc comments
 (`//!` in each `src/lib.rs` / `src/main.rs`), not in separate
 `docs/design/*.md` files. See `code-doc-as-design-discipline.md` for the
 rationale.
-
-## Spec origin
-
-Original spec: mini-app issue `38cda5f3`.
