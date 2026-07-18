@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [0.2.0] — 2026-07-18
+
+### Added
+
 - **Error catalog** — opt-in via `Config::emit_error_catalog` (`--errors`
   on the CLI, `RunParams.errors` on `aidoc_gen` / `aidoc_check`). Emits
   one narrative `errors/<CODE>.md` per catalogued diagnostic, a

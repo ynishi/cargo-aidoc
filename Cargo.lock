@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aidoc-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cargo_metadata",
  "rustdoc-types",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "aidoc-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aidoc-core",
  "rmcp",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-aidoc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aidoc-core",
  "clap",
