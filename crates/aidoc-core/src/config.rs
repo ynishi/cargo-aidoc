@@ -42,6 +42,15 @@ pub struct Config {
     /// [`Platform::Context7`]). See the `platform` module for what each
     /// overlay emits.
     pub platforms: Vec<Platform>,
+
+    /// If true, additionally emit an error catalog: one
+    /// `errors/<CODE>.md` per catalogued diagnostic, a deterministic
+    /// `errors/index.json`, and a top-level `llms-errors.txt`. The
+    /// catalog is populated from every rustdoc item that derives
+    /// `miette::Diagnostic` — consumers add no dependency on
+    /// cargo-aidoc, only on miette. See [`crate::error_catalog`] for
+    /// the consumer contract.
+    pub emit_error_catalog: bool,
 }
 
 impl Default for Config {
@@ -53,6 +62,7 @@ impl Default for Config {
             check: false,
             exclude: Vec::new(),
             platforms: Vec::new(),
+            emit_error_catalog: false,
         }
     }
 }

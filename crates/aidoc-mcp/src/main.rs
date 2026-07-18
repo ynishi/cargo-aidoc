@@ -1,32 +1,51 @@
 //! `aidoc-mcp` — Model Context Protocol server entry point.
 //!
-//! Exposes the aidoc-core pipeline as three MCP tools:
+//! Exposes the aidoc-core pipeline as four MCP tools:
 //!
 //! - `aidoc_info` — report version and default configuration.
 //! - `aidoc_gen` — run the pipeline and write artifacts to disk.
 //! - `aidoc_check` — run the pipeline and diff against the on-disk
 //!   copy without writing anything (read-only, matches `--check`).
+//! - `aidoc_error` — fetch one or all catalogued diagnostics without
+//!   writing any files.
 //!
-//! Every response is wrapped in a JSON envelope containing `ok`, a
-//! short human-readable `summary`, the full lint diagnostic list, and
-//! (depending on the tool) the list of artifacts written or the list of
-//! paths that would change. The envelope shape mirrors algocline's
-//! `hub_dist` gendoc contract so callers can reuse the same handling.
+//! It also exposes two orientation guides as MCP resources:
+//!
+//! - `aidoc://guides/onboarding` — tool + resource map for callers.
+//! - `aidoc://guides/error-catalog` — consumer contract for the
+//!   error catalog (what a crate does to appear in it).
+//!
+//! Every tool response is wrapped in a JSON envelope containing `ok`,
+//! a short human-readable `summary`, the full lint diagnostic list,
+//! and (depending on the tool) the list of artifacts written, the list
+//! of paths that would change, or the requested error entries. The
+//! envelope shape mirrors algocline's `hub_dist` gendoc contract so
+//! callers can reuse the same handling.
 
 use std::path::PathBuf;
 
-use aidoc_core::{Config, Level};
+use aidoc_core::{Config, ErrorEntry, Level};
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities,
-        ServerInfo,
+        CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
+        ProtocolVersion, ReadResourceRequestParams, ReadResourceResult, Resource,
+        ResourceContents, ServerCapabilities, ServerInfo,
     },
-    schemars, tool, tool_handler, tool_router,
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router,
     transport::stdio,
 };
 use serde::{Deserialize, Serialize};
+
+/// Bundled onboarding guide (surfaced via `aidoc://guides/onboarding`).
+const GUIDE_ONBOARDING: &str = include_str!("../guides/onboarding.md");
+
+/// Bundled error-catalog consumer-contract guide (surfaced via
+/// `aidoc://guides/error-catalog`).
+const GUIDE_ERROR_CATALOG: &str = include_str!("../guides/error-catalog.md");
 
 /// Shared parameter shape for both `aidoc_gen` and `aidoc_check`.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -42,6 +61,24 @@ pub struct RunParams {
     /// reflects them.
     #[serde(default)]
     pub strict: bool,
+    /// Additionally emit the error catalog (`errors/<CODE>.md`,
+    /// `errors/index.json`, `llms-errors.txt`) built from every
+    /// `#[derive(miette::Diagnostic)]` item in the workspace.
+    #[serde(default)]
+    pub errors: bool,
+}
+
+/// Parameter shape for the `aidoc_error` tool.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct ErrorParams {
+    /// Workspace root (directory containing the top-level Cargo.toml).
+    /// Defaults to the current working directory.
+    #[serde(default)]
+    pub workspace_root: Option<String>,
+    /// Fetch a single entry by its `code` (e.g. `"EBP001"`). Omit to
+    /// receive a compact summary of every catalogued diagnostic.
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 /// The MCP server exposing aidoc's three tools.
@@ -74,7 +111,11 @@ impl AidocServer {
             "name": env!("CARGO_PKG_NAME"),
             "version": env!("CARGO_PKG_VERSION"),
             "default_out_dir": "docs/aidoc",
-            "tools": ["aidoc_info", "aidoc_gen", "aidoc_check"],
+            "tools": ["aidoc_info", "aidoc_gen", "aidoc_check", "aidoc_error"],
+            "resources": [
+                "aidoc://guides/onboarding",
+                "aidoc://guides/error-catalog",
+            ],
         });
         Ok(text_result(info))
     }
@@ -107,21 +148,102 @@ impl AidocServer {
             serde_json::to_value(&envelope).unwrap_or_default(),
         ))
     }
+
+    /// Fetch one or all catalogued diagnostics.
+    ///
+    /// This is a read-only lookup: nothing is written to disk. The
+    /// extractor runs in-memory against fresh rustdoc JSON, so the
+    /// caller sees whatever the source tree currently defines —
+    /// useful when the on-disk `errors/index.json` is stale or absent.
+    ///
+    /// Response envelope:
+    ///
+    /// - `code` provided: `{ ok, summary, entries: [ErrorEntry] }`
+    ///   with a single element if the code matched, else empty.
+    /// - `code` omitted: `{ ok, summary, entries: [ErrorSummary] }`
+    ///   where each entry is `{ code, item_path, message_template }`.
+    #[tool(description = "Fetch one or all catalogued diagnostics by stable code.")]
+    async fn aidoc_error(
+        &self,
+        Parameters(params): Parameters<ErrorParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let envelope = tokio::task::spawn_blocking(move || fetch_errors(params))
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(text_result(
+            serde_json::to_value(&envelope).unwrap_or_default(),
+        ))
+    }
 }
 
 #[tool_handler]
 impl ServerHandler for AidocServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
-            .with_protocol_version(ProtocolVersion::LATEST)
-            .with_instructions(
-                "Generate LLM-facing doc artifacts (llms.txt / markdown / api.json) from \
-                 rustdoc JSON. Use `aidoc_gen` to write, `aidoc_check` for drift detection, \
-                 and `aidoc_info` for metadata."
-                    .to_owned(),
-            )
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::from_build_env())
+        .with_protocol_version(ProtocolVersion::LATEST)
+        .with_instructions(
+            "Generate LLM-facing doc artifacts (llms.txt / markdown / api.json / error \
+             catalog) from rustdoc JSON. Tools: `aidoc_gen` (write), `aidoc_check` (drift), \
+             `aidoc_error` (fetch one or all catalogued diagnostics), `aidoc_info` (metadata). \
+             Read `aidoc://guides/onboarding` first for a tool map; read \
+             `aidoc://guides/error-catalog` for the consumer contract."
+                .to_owned(),
+        )
     }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult {
+            meta: None,
+            next_cursor: None,
+            resources: vec![
+                text_resource(
+                    "aidoc://guides/onboarding",
+                    "onboarding",
+                    "Tool and resource map for the aidoc MCP server.",
+                ),
+                text_resource(
+                    "aidoc://guides/error-catalog",
+                    "error-catalog",
+                    "Consumer contract: how a crate joins the error catalog.",
+                ),
+            ],
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let body = match request.uri.as_str() {
+            "aidoc://guides/onboarding" => GUIDE_ONBOARDING,
+            "aidoc://guides/error-catalog" => GUIDE_ERROR_CATALOG,
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("unknown resource uri: {other}"),
+                    None,
+                ));
+            }
+        };
+        let contents = ResourceContents::text(body, request.uri);
+        Ok(ReadResourceResult::new(vec![contents]))
+    }
+}
+
+fn text_resource(uri: &str, name: &str, description: &str) -> Resource {
+    Resource::new(uri.to_owned(), name.to_owned())
+        .with_description(description.to_owned())
+        .with_mime_type("text/markdown")
 }
 
 /// The JSON envelope returned by `aidoc_gen` and `aidoc_check`.
@@ -168,6 +290,7 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
         strict: params.strict,
         check,
         out_dir: out_dir.clone(),
+        emit_error_catalog: params.errors,
         ..Config::default()
     };
 
@@ -200,28 +323,27 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
         .collect();
 
     if check {
-        let diffs = match aidoc_core::diff_report(&report, &out_dir, &workspace_root) {
-            Ok(d) => d,
-            Err(err) => {
-                return Envelope {
-                    ok: false,
-                    summary: format!("aidoc: diff failed: {err}"),
-                    diagnostics,
-                    written: Vec::new(),
-                    diffs: Vec::new(),
-                    error: Some(err.to_string()),
-                };
-            }
-        };
-        let ok = diffs.is_empty() && !report.has_errors();
-        let summary = if diffs.is_empty() {
-            format!(
-                "aidoc: check clean ({} artifact(s))",
-                report.artifacts.len()
-            )
-        } else {
-            format!("aidoc: {} artifact(s) would change", diffs.len())
-        };
+        // Shared with `cargo aidoc --check` via aidoc_core so both
+        // front ends produce the same actionable summary — critically,
+        // the same distinction between "not on disk yet" and
+        // "modified" for partial-uninit cases.
+        let summary_data =
+            match aidoc_core::classify_diffs(&report, &out_dir, &workspace_root) {
+                Ok(s) => s,
+                Err(err) => {
+                    return Envelope {
+                        ok: false,
+                        summary: format!("aidoc: diff failed: {err}"),
+                        diagnostics,
+                        written: Vec::new(),
+                        diffs: Vec::new(),
+                        error: Some(err.to_string()),
+                    };
+                }
+            };
+        let ok = summary_data.is_empty() && !report.has_errors();
+        let summary = summary_data.summary_message(report.artifacts.len());
+        let diffs: Vec<String> = summary_data.paths().cloned().collect();
         Envelope {
             ok,
             summary,
@@ -267,6 +389,91 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
 fn text_result(value: serde_json::Value) -> CallToolResult {
     let body = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     CallToolResult::success(vec![ContentBlock::text(body)])
+}
+
+/// Envelope returned by `aidoc_error`.
+///
+/// Same shape as the `Envelope` returned by `aidoc_gen` / `aidoc_check`
+/// in the `ok` / `summary` fields, but carries either full entries or
+/// compact summaries in `entries`.
+#[derive(Debug, Serialize)]
+struct ErrorEnvelope {
+    ok: bool,
+    summary: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    entries: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorSummary {
+    code: String,
+    item_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_template: Option<String>,
+}
+
+fn fetch_errors(params: ErrorParams) -> ErrorEnvelope {
+    let workspace_root = params
+        .workspace_root
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let workspace = match aidoc_core::IndexedWorkspace::build(&workspace_root, &Config::default()) {
+        Ok(w) => w,
+        Err(err) => {
+            return ErrorEnvelope {
+                ok: false,
+                summary: format!("aidoc_error: index failed: {err}"),
+                entries: Vec::new(),
+                error: Some(err.to_string()),
+            };
+        }
+    };
+
+    let all: Vec<ErrorEntry> = aidoc_core::error_catalog::extract(&workspace);
+
+    match params.code.as_deref() {
+        Some(code) => match all.into_iter().find(|e| e.code == code) {
+            Some(entry) => {
+                let value = serde_json::to_value(&entry).unwrap_or_default();
+                ErrorEnvelope {
+                    ok: true,
+                    summary: format!("aidoc_error: found `{code}`"),
+                    entries: vec![value],
+                    error: None,
+                }
+            }
+            None => ErrorEnvelope {
+                ok: false,
+                summary: format!("aidoc_error: no entry with code `{code}`"),
+                entries: Vec::new(),
+                error: Some(format!("code not found: {code}")),
+            },
+        },
+        None => {
+            let n = all.len();
+            let entries = all
+                .into_iter()
+                .map(|e| {
+                    let summary = ErrorSummary {
+                        code: e.code,
+                        item_path: e.item_path,
+                        message_template: e.message_template,
+                    };
+                    serde_json::to_value(&summary).unwrap_or_default()
+                })
+                .collect();
+            ErrorEnvelope {
+                ok: true,
+                summary: format!("aidoc_error: {n} entry(ies)"),
+                entries,
+                error: None,
+            }
+        }
+    }
 }
 
 #[tokio::main]

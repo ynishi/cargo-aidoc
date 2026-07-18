@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 pub mod config;
 pub mod error;
+pub mod error_catalog;
 pub mod generate;
 pub mod index;
 pub mod lint;
@@ -41,9 +42,13 @@ mod rustdoc;
 
 pub use config::{Config, Platform, Preset, UnknownPlatform};
 pub use error::{Error, Result};
+pub use error_catalog::{ErrorEntry, Snippet};
 pub use generate::{Artifact, ArtifactLocation};
 pub use index::{IndexedCrate, IndexedWorkspace};
 pub use lint::{Diagnostic, Level};
+
+// `DiffSummary` and `classify_diffs` are defined below in this file;
+// re-export them for consumers that stick to `aidoc_core::` paths.
 
 /// The output of a single pipeline run: everything a front end needs to
 /// either write artifacts to disk (`cargo aidoc`) or compare them to a
@@ -84,8 +89,18 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
     let mut artifacts =
         generate::render_all(&workspace, None).map_err(|source| Error::Generate {
             source: Box::new(source),
-            index_summary,
+            index_summary: index_summary.clone(),
         })?;
+
+    if config.emit_error_catalog {
+        let entries = error_catalog::extract(&workspace);
+        generate::render_error_catalog(&entries, &mut artifacts).map_err(|source| {
+            Error::Generate {
+                source: Box::new(source),
+                index_summary,
+            }
+        })?;
+    }
 
     platform::apply_overlays(&workspace, &mut artifacts, &config.platforms)?;
 
@@ -126,31 +141,116 @@ pub fn write_report(report: &Report, out_dir: &Path, workspace_root: &Path) -> R
     Ok(())
 }
 
-/// Compare every artifact in `report` against its on-disk counterpart
-/// and return the list of paths whose contents differ (or that are
-/// missing on disk). See [`write_report`] for how `out_dir` and
-/// `workspace_root` are used.
+/// Detailed classification of every diff in a check-mode run.
+///
+/// `missing` collects the artifact paths that don't exist on disk yet
+/// (the caller would create them on the next `aidoc_gen`). `modified`
+/// collects paths whose on-disk copy differs from the freshly
+/// generated body. Paths that match on disk contribute to neither
+/// list.
+///
+/// This is the shape returned by [`classify_diffs`]; both `cargo aidoc
+/// --check` and the MCP `aidoc_check` tool use it to produce a
+/// consistent, actionable summary message via
+/// [`DiffSummary::summary_message`].
+#[derive(Debug, Clone, Default)]
+pub struct DiffSummary {
+    /// Artifact paths (base-relative) that don't exist on disk.
+    pub missing: Vec<String>,
+    /// Artifact paths (base-relative) whose on-disk bytes differ.
+    pub modified: Vec<String>,
+}
+
+impl DiffSummary {
+    /// True when nothing would change on disk.
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.modified.is_empty()
+    }
+
+    /// Total number of artifacts that would change (missing + modified).
+    pub fn total(&self) -> usize {
+        self.missing.len() + self.modified.len()
+    }
+
+    /// Iterate every diff path in a stable order (all missing first,
+    /// then all modified), matching the order they were discovered.
+    pub fn paths(&self) -> impl Iterator<Item = &String> {
+        self.missing.iter().chain(self.modified.iter())
+    }
+
+    /// Actionable, human-readable summary of the check result. Callers
+    /// pass the total artifact count so the clean-state message can
+    /// state how many artifacts were compared.
+    ///
+    /// The four branches:
+    ///
+    /// 1. Clean — `"aidoc: check clean (N artifact(s))"`
+    /// 2. Only missing — `"aidoc: N artifact(s) not on disk yet — run
+    ///    aidoc_gen to write them"`. Triggers for both full uninit and
+    ///    partial uninit (e.g. `docs/aidoc/` exists but the error
+    ///    catalog subset was never written).
+    /// 3. Only modified — `"aidoc: N artifact(s) content changed —
+    ///    run aidoc_gen to update"`
+    /// 4. Mixed — `"aidoc: N missing + M modified — run aidoc_gen"`
+    pub fn summary_message(&self, total_artifacts: usize) -> String {
+        if self.is_empty() {
+            format!("aidoc: check clean ({total_artifacts} artifact(s))")
+        } else if self.modified.is_empty() {
+            format!(
+                "aidoc: {} artifact(s) not on disk yet — run aidoc_gen to write them",
+                self.missing.len()
+            )
+        } else if self.missing.is_empty() {
+            format!(
+                "aidoc: {} artifact(s) content changed — run aidoc_gen to update",
+                self.modified.len()
+            )
+        } else {
+            format!(
+                "aidoc: {} missing + {} modified — run aidoc_gen",
+                self.missing.len(),
+                self.modified.len()
+            )
+        }
+    }
+}
+
+/// Compare every artifact in `report` against its on-disk copy and
+/// return the categorised diff. See [`write_report`] for how `out_dir`
+/// and `workspace_root` are interpreted.
 ///
 /// This is the check-mode counterpart of [`write_report`]: nothing is
-/// written; callers pick between exit code 0 (empty result) and 2
-/// (non-empty). Read failures other than "file not found" propagate as
-/// errors. The returned paths use each artifact's original
-/// (base-relative) form so callers can echo them without recomputing.
-pub fn diff_report(report: &Report, out_dir: &Path, workspace_root: &Path) -> Result<Vec<String>> {
-    let mut diffs = Vec::new();
+/// written; the caller decides how to react to the returned
+/// [`DiffSummary`]. Read failures other than "file not found"
+/// propagate as errors so no diff is ever silently dropped.
+pub fn classify_diffs(
+    report: &Report,
+    out_dir: &Path,
+    workspace_root: &Path,
+) -> Result<DiffSummary> {
+    let mut summary = DiffSummary::default();
     for artifact in &report.artifacts {
         let path = resolve_path(artifact, out_dir, workspace_root);
         match std::fs::read(&path) {
             Ok(bytes) => {
                 if bytes != artifact.body.as_bytes() {
-                    diffs.push(artifact.path.clone());
+                    summary.modified.push(artifact.path.clone());
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                diffs.push(artifact.path.clone());
+                summary.missing.push(artifact.path.clone());
             }
             Err(err) => return Err(err.into()),
         }
     }
-    Ok(diffs)
+    Ok(summary)
+}
+
+/// Backwards-compatible wrapper around [`classify_diffs`]. Returns the
+/// same flat list of paths that earlier versions of aidoc-core
+/// produced; new callers should prefer [`classify_diffs`] so they can
+/// distinguish missing from modified artifacts.
+pub fn diff_report(report: &Report, out_dir: &Path, workspace_root: &Path) -> Result<Vec<String>> {
+    let summary = classify_diffs(report, out_dir, workspace_root)?;
+    Ok(summary.paths().cloned().collect())
 }

@@ -5,6 +5,66 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Error catalog** — opt-in via `Config::emit_error_catalog` (`--errors`
+  on the CLI, `RunParams.errors` on `aidoc_gen` / `aidoc_check`). Emits
+  one narrative `errors/<CODE>.md` per catalogued diagnostic, a
+  deterministic `errors/index.json`, and a top-level `llms-errors.txt`
+  following the [llmstxt.org](https://llmstxt.org) shape. The
+  consumer contract is zero-coupling: `#[derive(miette::Diagnostic)]`
+  plus doc fences whose info-string carries `code=<CODE>` is enough —
+  no dependency on cargo-aidoc from the consumer crate.
+- **Three miette shapes catalogued** — struct-level, enum-level (one
+  code per enum), and per-variant (the dominant `thiserror + miette`
+  shape). Variant entries record the fully-qualified
+  `<crate>::<enum>::<Variant>` path.
+- **`aidoc_error` MCP tool** — fetch one or all catalogued diagnostics
+  in-memory (no writes). Passing a `code` returns the full
+  `ErrorEntry`; omitting `code` returns a compact
+  `{code, item_path, message_template}` summary of every entry.
+- **MCP resources** — `aidoc://guides/onboarding` (tool + resource map)
+  and `aidoc://guides/error-catalog` (consumer contract). Server
+  capabilities now advertise `resources` alongside `tools`, and the
+  server instructions point callers at the guides.
+- **`aidoc_info`** now reports both `tools` and `resources` for
+  one-shot server-surface introspection.
+- **onboarding guide** documents the decision boundary between
+  committing `docs/aidoc/` and adding it to `.gitignore`.
+
+### Changed
+
+- **`aidoc_check` / `cargo aidoc --check` share summary logic** via
+  the new `aidoc_core::classify_diffs` and
+  `DiffSummary::summary_message`. The CLI and MCP tool now emit the
+  same actionable message and distinguish "missing on disk" (`run
+  aidoc_gen to write them`) from "modified on disk" (`run aidoc_gen
+  to update`) — critical for the partial-uninit case where
+  `docs/aidoc/` exists from an earlier run but the error catalog
+  subset has never been written.
+- **`aidoc_core::diff_report`** is now a wrapper over `classify_diffs`
+  for backwards compatibility; new callers should prefer
+  `classify_diffs` for categorised output.
+
+### Fixed
+
+- **Module-slug collision** — a top-level module literally named
+  `index` no longer collides with the crate-root `<crate>/index.md`
+  document. The module resolves to `<crate>/_index.md` so both
+  artefacts co-exist.
+
+### Known limitations
+
+- The `aidoc-mcp` `RunParams` schema does not yet expose the
+  `--platform` overlay list; platform overlays remain CLI-only.
+  Tracked as a follow-up.
+- `rustdoc-types` is version-locked to what the maintainers of that
+  crate ship. If the nightly toolchain a user runs emits a different
+  `format_version`, the pipeline exits with a typed
+  `FormatVersionMismatch` error rather than best-effort parsing.
+
 ## [0.1.0] — 2026-07-08
 
 Initial release. Three crates ship together at the same version.

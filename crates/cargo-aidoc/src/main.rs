@@ -49,6 +49,14 @@ struct Cli {
     /// Known values: `context7`, `deepwiki`, `anthropic-style`.
     #[arg(long, value_delimiter = ',', value_name = "NAME")]
     platform: Vec<String>,
+
+    /// Additionally emit an error catalog (`errors/<CODE>.md`,
+    /// `errors/index.json`, `llms-errors.txt`) built from every
+    /// `#[derive(miette::Diagnostic)]` item in the workspace.
+    /// Consumers do not need to depend on cargo-aidoc for this to
+    /// work — the extractor reads rustdoc JSON.
+    #[arg(long)]
+    errors: bool,
 }
 
 fn main() -> ExitCode {
@@ -114,6 +122,7 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
         check: cli.check,
         out_dir: out_dir.clone(),
         platforms,
+        emit_error_catalog: cli.errors,
         ..Config::default()
     };
 
@@ -122,16 +131,30 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
     print_diagnostics(&report);
 
     if cli.check {
-        let diffs = aidoc_core::diff_report(&report, &out_dir, &workspace_root)?;
-        if diffs.is_empty() {
+        // Shared with the `aidoc_check` MCP tool via aidoc_core so
+        // both front ends produce the same actionable message.
+        let summary = aidoc_core::classify_diffs(&report, &out_dir, &workspace_root)?;
+        eprintln!(
+            "cargo-aidoc: {}",
+            summary.summary_message(report.artifacts.len())
+        );
+        if !summary.missing.is_empty() {
+            eprintln!("cargo-aidoc:   missing ({}):", summary.missing.len());
+            for path in &summary.missing {
+                eprintln!("cargo-aidoc:     {path}");
+            }
+        }
+        if !summary.modified.is_empty() {
+            eprintln!("cargo-aidoc:   modified ({}):", summary.modified.len());
+            for path in &summary.modified {
+                eprintln!("cargo-aidoc:     {path}");
+            }
+        }
+        if summary.is_empty() {
             if report.has_errors() {
                 return Ok(ExitCode::from(2));
             }
             return Ok(ExitCode::SUCCESS);
-        }
-        eprintln!("cargo-aidoc: {} artifact(s) would change:", diffs.len());
-        for path in diffs {
-            eprintln!("  {path}");
         }
         Ok(ExitCode::from(2))
     } else {

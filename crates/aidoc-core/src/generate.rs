@@ -21,6 +21,7 @@ use rustdoc_types::{Item, ItemEnum, Module, Visibility};
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::error_catalog::{ErrorEntry, Snippet};
 use crate::index::{IndexedCrate, IndexedWorkspace};
 
 /// One generated artifact ready to be written to disk.
@@ -123,6 +124,162 @@ pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Result<V
     ));
 
     Ok(artifacts)
+}
+
+/// Append the error-catalog artifact set to `artifacts` in place.
+///
+/// Emits three families:
+///
+/// - `errors/<CODE>.md` — per-code narrative page: the message
+///   template, `help` / `url` metadata, the original doc body, and
+///   every tagged snippet grouped by its bare tags.
+/// - `errors/index.json` — deterministic list of every `ErrorEntry`
+///   for machine consumption (drift check, MCP fetch by code).
+/// - `llms-errors.txt` — top-level index of every code, mirroring
+///   `llms.txt`'s shape so LLM callers already conditioned on
+///   [llmstxt.org](https://llmstxt.org) can consume it identically.
+///
+/// If `entries` is empty the function still emits the three artifacts
+/// (with empty bodies / an empty JSON array) so `--check` can detect
+/// the transition from "some errors" to "none". This mirrors the
+/// treatment of empty `llms-full.txt`.
+pub fn render_error_catalog(entries: &[ErrorEntry], artifacts: &mut Vec<Artifact>) -> Result<()> {
+    for entry in entries {
+        artifacts.push(Artifact::in_out_dir(
+            format!("errors/{}.md", entry.code),
+            render_error_entry_md(entry),
+        ));
+    }
+
+    artifacts.push(Artifact::in_out_dir(
+        "errors/index.json",
+        render_error_index_json(entries)?,
+    ));
+
+    artifacts.push(Artifact::in_out_dir(
+        "llms-errors.txt",
+        render_llms_errors_txt(entries),
+    ));
+
+    Ok(())
+}
+
+fn render_error_entry_md(entry: &ErrorEntry) -> String {
+    let mut out = String::new();
+    writeln!(&mut out, "# {}", entry.code).unwrap();
+    out.push('\n');
+
+    if let Some(msg) = &entry.message_template {
+        writeln!(&mut out, "**Message:** `{msg}`").unwrap();
+        out.push('\n');
+    }
+    if let Some(help) = &entry.help {
+        writeln!(&mut out, "**Help:** {help}").unwrap();
+        out.push('\n');
+    }
+    if let Some(url) = &entry.url {
+        writeln!(&mut out, "**Reference:** <{url}>").unwrap();
+        out.push('\n');
+    }
+    writeln!(&mut out, "**Defined in:** `{}`", entry.item_path).unwrap();
+    out.push('\n');
+
+    if !entry.docs.trim().is_empty() {
+        writeln!(&mut out, "## Description").unwrap();
+        out.push('\n');
+        out.push_str(&entry.docs);
+        if !entry.docs.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    if !entry.snippets.is_empty() {
+        writeln!(&mut out, "## Snippets").unwrap();
+        out.push('\n');
+        for snippet in &entry.snippets {
+            let heading = snippet_heading(snippet);
+            writeln!(&mut out, "### {heading}").unwrap();
+            out.push('\n');
+            writeln!(&mut out, "```{}", snippet.lang).unwrap();
+            out.push_str(&snippet.body);
+            if !snippet.body.ends_with('\n') {
+                out.push('\n');
+            }
+            writeln!(&mut out, "```").unwrap();
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+fn snippet_heading(snippet: &Snippet) -> String {
+    if snippet.tags.is_empty() {
+        "Example".to_owned()
+    } else {
+        // Capitalise each tag for a readable heading, e.g.
+        // `fix` -> `Fix`, `runtime` -> `Runtime`.
+        snippet
+            .tags
+            .iter()
+            .map(|tag| {
+                let mut chars = tag.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+}
+
+fn render_error_index_json(entries: &[ErrorEntry]) -> Result<String> {
+    // `ErrorEntry` derives `Serialize` in the error_catalog module,
+    // so we can round-trip it directly. Sorting is done at the
+    // `error_catalog::extract` layer, so callers already see stable
+    // order here.
+    let json = serde_json::to_string_pretty(entries)?;
+    Ok(format!("{json}\n"))
+}
+
+fn render_llms_errors_txt(entries: &[ErrorEntry]) -> String {
+    let mut out = String::new();
+    writeln!(&mut out, "# Error Catalog").unwrap();
+    out.push('\n');
+    if entries.is_empty() {
+        out.push_str("> No diagnostics are catalogued yet.\n\n");
+        return out;
+    }
+    writeln!(
+        &mut out,
+        "> {n} diagnostic{s} catalogued from `#[derive(miette::Diagnostic)]` items.",
+        n = entries.len(),
+        s = if entries.len() == 1 { "" } else { "s" },
+    )
+    .unwrap();
+    out.push('\n');
+
+    for entry in entries {
+        writeln!(&mut out, "## {}", entry.code).unwrap();
+        out.push('\n');
+        let summary = entry
+            .message_template
+            .as_deref()
+            .or(entry.help.as_deref())
+            .unwrap_or("(no message)");
+        writeln!(
+            &mut out,
+            "- [{code} · {path}](errors/{code}.md): {summary}",
+            code = entry.code,
+            path = entry.item_path,
+        )
+        .unwrap();
+        out.push('\n');
+    }
+
+    out
 }
 
 /// Render the top-level `llms.txt` index for a workspace.
@@ -545,8 +702,19 @@ fn crate_slug(name: &str) -> String {
     name.replace('-', "_")
 }
 
+/// Compute the on-disk slug for a module path.
+///
+/// Reserves the bare literal `"index"` so a top-level module named
+/// `index` (e.g. `aidoc_core::index`) does not collide with the
+/// crate-root `<crate_slug>/index.md` document. Colliding names are
+/// prefixed with an underscore (`index` → `_index`).
 fn module_slug(path: &str) -> String {
-    path.replace("::", "__")
+    let slug = path.replace("::", "__");
+    if slug == "index" {
+        "_index".to_owned()
+    } else {
+        slug
+    }
 }
 
 fn first_line(doc: &str) -> Option<&str> {
@@ -696,4 +864,23 @@ fn render_item_group(out: &mut String, heading: &str, kind: ItemKind, items: &[R
         writeln!(out, "- `{}` — {}", item.name, item.summary).unwrap();
     }
     out.push('\n');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A top-level module named `index` must not resolve to a slug
+    /// that collides with the crate-root `<crate>/index.md` document.
+    /// The `aidoc-core` crate itself contains an `index` module, so
+    /// this regression is dogfood-visible.
+    #[test]
+    fn module_slug_reserves_index_for_crate_root() {
+        assert_eq!(module_slug("index"), "_index");
+        // Nested `sub::index` is not at slug level `index`, so it
+        // stays as-is (no collision with the crate root).
+        assert_eq!(module_slug("sub::index"), "sub__index");
+        // Normal module names round-trip unchanged.
+        assert_eq!(module_slug("config"), "config");
+    }
 }
