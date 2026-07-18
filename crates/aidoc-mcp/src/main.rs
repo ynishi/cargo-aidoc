@@ -30,8 +30,8 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
-        ProtocolVersion, ReadResourceRequestParams, ReadResourceResult, Resource,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        ProtocolVersion, ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
+        ServerCapabilities, ServerInfo,
     },
     schemars,
     service::RequestContext,
@@ -327,20 +327,19 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
         // front ends produce the same actionable summary — critically,
         // the same distinction between "not on disk yet" and
         // "modified" for partial-uninit cases.
-        let summary_data =
-            match aidoc_core::classify_diffs(&report, &out_dir, &workspace_root) {
-                Ok(s) => s,
-                Err(err) => {
-                    return Envelope {
-                        ok: false,
-                        summary: format!("aidoc: diff failed: {err}"),
-                        diagnostics,
-                        written: Vec::new(),
-                        diffs: Vec::new(),
-                        error: Some(err.to_string()),
-                    };
-                }
-            };
+        let summary_data = match aidoc_core::classify_diffs(&report, &out_dir, &workspace_root) {
+            Ok(s) => s,
+            Err(err) => {
+                return Envelope {
+                    ok: false,
+                    summary: format!("aidoc: diff failed: {err}"),
+                    diagnostics,
+                    written: Vec::new(),
+                    diffs: Vec::new(),
+                    error: Some(err.to_string()),
+                };
+            }
+        };
         let ok = summary_data.is_empty() && !report.has_errors();
         let summary = summary_data.summary_message(report.artifacts.len());
         let diffs: Vec<String> = summary_data.paths().cloned().collect();

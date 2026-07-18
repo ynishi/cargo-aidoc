@@ -309,10 +309,7 @@ fn parse_diagnostic_attr(raw: &str) -> Option<ParsedDiagnostic> {
 
     for arg in split_top_level_args(inner) {
         let arg = arg.trim();
-        if let Some(code) = arg
-            .strip_prefix("code(")
-            .and_then(|s| s.strip_suffix(')'))
-        {
+        if let Some(code) = arg.strip_prefix("code(").and_then(|s| s.strip_suffix(')')) {
             out.code = Some(code.trim().to_owned());
         } else if let Some(help) = arg
             .strip_prefix("help(")
@@ -320,7 +317,11 @@ fn parse_diagnostic_attr(raw: &str) -> Option<ParsedDiagnostic> {
             .and_then(strip_quotes)
         {
             out.help = Some(help);
-        } else if let Some(url) = arg.strip_prefix("url(").and_then(|s| s.strip_suffix(')')).and_then(strip_quotes) {
+        } else if let Some(url) = arg
+            .strip_prefix("url(")
+            .and_then(|s| s.strip_suffix(')'))
+            .and_then(strip_quotes)
+        {
             out.url = Some(url);
         }
     }
