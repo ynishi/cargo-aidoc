@@ -51,6 +51,16 @@ pub struct Config {
     /// cargo-aidoc, only on miette. See [`crate::error_catalog`] for
     /// the consumer contract.
     pub emit_error_catalog: bool,
+
+    /// Project title for the `llms.txt` H1. Wired to `--title` on the
+    /// CLI. When unset, the workspace root directory's basename is
+    /// used — which makes the committed artifact depend on what the
+    /// checkout happens to be called: a git worktree named after its
+    /// branch bakes the branch slug into `llms.txt`, and a `--check`
+    /// run from a normally-named clone then reports drift. Virtual
+    /// workspaces have no root package name to fall back on, so the
+    /// stable title has to come from the caller.
+    pub title: Option<String>,
 }
 
 impl Default for Config {
@@ -63,6 +73,7 @@ impl Default for Config {
             exclude: Vec::new(),
             platforms: Vec::new(),
             emit_error_catalog: false,
+            title: None,
         }
     }
 }

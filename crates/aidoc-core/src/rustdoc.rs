@@ -14,10 +14,17 @@ use std::process::Command;
 use crate::error::{Error, Result};
 
 /// Which target to ask rustdoc to document for a given crate.
+///
+/// Both variants carry the *target* name because that — not the package
+/// name — is what rustdoc derives the JSON payload's filename from. The
+/// two usually coincide for libraries, but `[lib] name = "..."` breaks
+/// the coincidence (Tauri v2 apps ship `<pkg>_lib` to dodge the
+/// bin/lib filename clash on Windows, which is how the package-name
+/// assumption surfaced as a missing-payload error in 0.1.0).
 #[derive(Debug, Clone)]
 pub(crate) enum Target<'a> {
-    /// Build docs for the library target (`--lib`).
-    Lib,
+    /// Build docs for the library target (`--lib`), carrying its name.
+    Lib(&'a str),
     /// Build docs for the named binary target (`--bin <name>`).
     Bin(&'a str),
 }
@@ -25,9 +32,11 @@ pub(crate) enum Target<'a> {
 /// Run `cargo +nightly rustdoc` for the given crate and parse the
 /// resulting JSON.
 ///
-/// `crate_name` is the cargo package name (e.g. `aidoc-core`); it is used
-/// to locate the emitted `target/doc/<name>.json` file (rustdoc normalizes
-/// dashes to underscores).
+/// `crate_name` is the cargo package name (e.g. `aidoc-core`); it only
+/// labels error messages. The emitted `target/doc/<name>.json` file is
+/// located from the *target* name carried in [`Target`] (rustdoc
+/// normalizes dashes to underscores), because a `[lib] name` override
+/// makes the two diverge.
 pub(crate) fn build_and_parse(
     target: &Target<'_>,
     crate_name: &str,
@@ -38,7 +47,7 @@ pub(crate) fn build_and_parse(
     cmd.arg("+nightly").arg("rustdoc");
 
     match target {
-        Target::Lib => {
+        Target::Lib(_) => {
             cmd.arg("--lib");
         }
         Target::Bin(name) => {
@@ -65,8 +74,7 @@ pub(crate) fn build_and_parse(
     }
 
     let json_name = match target {
-        Target::Lib => crate_name.replace('-', "_"),
-        Target::Bin(name) => name.replace('-', "_"),
+        Target::Lib(name) | Target::Bin(name) => name.replace('-', "_"),
     };
     let json_path = workspace_root
         .join("target")
@@ -97,13 +105,14 @@ pub(crate) fn build_and_parse(
 
 /// Where rustdoc emits its JSON payload, given a workspace root.
 ///
-/// Exposed for callers that want to reason about the on-disk cache
-/// (for example, to invalidate it before a re-run). Currently only used
-/// by tests.
+/// `target_name` is the *target* name (lib or bin), not the package
+/// name — the two diverge under a `[lib] name` override. Exposed for
+/// callers that want to reason about the on-disk cache (for example, to
+/// invalidate it before a re-run). Currently only used by tests.
 #[allow(dead_code)]
-pub(crate) fn json_path(workspace_root: &Path, crate_name: &str) -> PathBuf {
+pub(crate) fn json_path(workspace_root: &Path, target_name: &str) -> PathBuf {
     workspace_root
         .join("target")
         .join("doc")
-        .join(format!("{}.json", crate_name.replace('-', "_")))
+        .join(format!("{}.json", target_name.replace('-', "_")))
 }

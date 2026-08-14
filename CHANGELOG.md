@@ -19,6 +19,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [0.2.1] — 2026-08-15
+
+### Added
+
+- **`--title`** (`Config::title`) pins the `llms.txt` H1. Without it the
+  title is the workspace root directory's basename, which makes a
+  committed artifact depend on what the checkout happens to be called: a
+  git worktree named after its branch bakes the branch slug into
+  `llms.txt`, and a `--check` run from a normally-named clone then
+  reports drift. Virtual workspaces have no root package name to fall
+  back on, so a stable title has to come from the caller.
+
+### Fixed
+
+- **A `[lib] name` override no longer breaks the run.** The rustdoc JSON
+  payload's filename comes from the *target* name, not the package
+  name, and the two coincide often enough that the package name was
+  used. Tauri v2 apps ship `<pkg>_lib` to dodge the bin/lib filename
+  clash on Windows, and against such a workspace the run failed looking
+  for a payload that was never going to be at that path. `Target::Lib`
+  now carries the target name and the lookup uses it.
+
 ## [0.2.0] — 2026-07-18
 
 ### Added

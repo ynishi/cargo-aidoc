@@ -87,9 +87,11 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
     let index_summary = format!("indexed {} crate(s)", workspace.crates.len());
 
     let mut artifacts =
-        generate::render_all(&workspace, None).map_err(|source| Error::Generate {
-            source: Box::new(source),
-            index_summary: index_summary.clone(),
+        generate::render_all(&workspace, config.title.as_deref()).map_err(|source| {
+            Error::Generate {
+                source: Box::new(source),
+                index_summary: index_summary.clone(),
+            }
         })?;
 
     if config.emit_error_catalog {

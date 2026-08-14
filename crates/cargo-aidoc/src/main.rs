@@ -57,6 +57,14 @@ struct Cli {
     /// work — the extractor reads rustdoc JSON.
     #[arg(long)]
     errors: bool,
+
+    /// Project title for the `llms.txt` H1. Defaults to the workspace
+    /// root directory's basename — pass this when the checkout name is
+    /// not the project name (a git worktree named after its branch, a
+    /// CI job dir), otherwise the committed artifact drifts between
+    /// checkouts.
+    #[arg(long, value_name = "TITLE")]
+    title: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -123,6 +131,7 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
         out_dir: out_dir.clone(),
         platforms,
         emit_error_catalog: cli.errors,
+        title: cli.title,
         ..Config::default()
     };
 

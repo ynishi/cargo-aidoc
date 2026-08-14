@@ -105,12 +105,15 @@ impl IndexedWorkspace {
 /// Proc-macro / example / test / bench targets are ignored because they
 /// don't contribute to the crate's public API surface.
 fn select_target(targets: &[cargo_metadata::Target]) -> Option<Target<'_>> {
-    if targets.iter().any(|t| {
+    if let Some(lib) = targets.iter().find(|t| {
         t.kind
             .iter()
             .any(|k| matches!(k, TargetKind::Lib | TargetKind::RLib))
     }) {
-        return Some(Target::Lib);
+        // Carry the target's own name: `[lib] name = "..."` (e.g. a
+        // Tauri app's `<pkg>_lib`) makes it diverge from the package
+        // name, and the JSON payload is named after the target.
+        return Some(Target::Lib(lib.name.as_str()));
     }
 
     targets.iter().find_map(|t| {
