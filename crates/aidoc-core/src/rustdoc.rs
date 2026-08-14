@@ -1,12 +1,28 @@
-//! Invoke `cargo +nightly rustdoc --output-format json` and parse the
-//! resulting payload via `rustdoc-types`.
+//! Invoke rustdoc with `--output-format json` and parse the resulting
+//! payload via `rustdoc-types`.
 //!
 //! rustdoc's JSON output is unstable and toolchain-locked: the payload's
 //! `format_version` must match the `rustdoc-types` crate this binary was
-//! built against. Any mismatch is surfaced as
-//! [`Error::FormatVersionMismatch`] rather than silently producing bad
-//! output. Bumping the `rustdoc-types` dependency (and, if necessary, the
-//! nightly toolchain the user runs) is the intended fix.
+//! built against.
+//!
+//! # Why a dated toolchain and not `nightly`
+//!
+//! Every nightly emits exactly one `format_version`, and it changes
+//! whenever rustdoc's JSON types do. Asking for `nightly` therefore asks
+//! for "whatever the schema is today", which is a moving target that a
+//! fixed `rustdoc-types` dependency cannot hit for long: a consumer's CI
+//! installs the current nightly, the format has moved on, and the run
+//! fails on a disagreement between two tools rather than on anything
+//! about the code under test.
+//!
+//! So the toolchain is pinned, in [`crate::REQUIRED_NIGHTLY`], and the
+//! pin travels with the `rustdoc-types` version — bump one, bump the
+//! other. It is `pub` so a consumer can install exactly what this
+//! binary needs without copying a date into their CI and watching it
+//! rot.
+//!
+//! A caller that wants a different one passes `Config::toolchain`, which
+//! is the escape hatch for testing a newer format before the pin moves.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,7 +45,7 @@ pub(crate) enum Target<'a> {
     Bin(&'a str),
 }
 
-/// Run `cargo +nightly rustdoc` for the given crate and parse the
+/// Run rustdoc for the given crate under `toolchain` and parse the
 /// resulting JSON.
 ///
 /// `crate_name` is the cargo package name (e.g. `aidoc-core`); it only
@@ -42,9 +58,16 @@ pub(crate) fn build_and_parse(
     crate_name: &str,
     manifest_path: &Path,
     workspace_root: &Path,
+    toolchain: &str,
 ) -> Result<rustdoc_types::Crate> {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("+nightly").arg("rustdoc");
+    // `rustup run <toolchain> cargo` rather than `cargo +<toolchain>`.
+    // The two are equivalent when the rustup proxy is what gets
+    // spawned, and only the first is reliable when it is not: a
+    // `+toolchain` argument reaching a real `cargo` is an unknown
+    // subcommand, which is how the same call fails on Windows for other
+    // rustdoc-JSON consumers.
+    let mut cmd = Command::new("rustup");
+    cmd.args(["run", toolchain, "cargo", "rustdoc"]);
 
     match target {
         Target::Lib(_) => {
@@ -60,13 +83,13 @@ pub(crate) fn build_and_parse(
     cmd.current_dir(workspace_root);
 
     let output = cmd.output().map_err(|e| Error::RustdocInvocation {
-        message: format!("failed to spawn `cargo +nightly rustdoc`: {e}"),
+        message: format!("failed to spawn `rustup run {toolchain} cargo rustdoc`: {e}"),
     })?;
 
     if !output.status.success() {
         return Err(Error::RustdocInvocation {
             message: format!(
-                "`cargo +nightly rustdoc` exited with {status} for crate `{crate_name}`\nstderr:\n{stderr}",
+                "`rustup run {toolchain} cargo rustdoc` exited with {status} for crate `{crate_name}`\nstderr:\n{stderr}",
                 status = output.status,
                 stderr = String::from_utf8_lossy(&output.stderr).trim(),
             ),
@@ -84,7 +107,7 @@ pub(crate) fn build_and_parse(
     if !json_path.exists() {
         return Err(Error::RustdocInvocation {
             message: format!(
-                "`cargo +nightly rustdoc` reported success but the JSON payload was not found at {}",
+                "`rustup run {toolchain} cargo rustdoc` reported success but the JSON payload was not found at {}",
                 json_path.display()
             ),
         });
@@ -97,6 +120,8 @@ pub(crate) fn build_and_parse(
         return Err(Error::FormatVersionMismatch {
             expected: rustdoc_types::FORMAT_VERSION,
             found: payload.format_version,
+            ran_under: toolchain.to_string(),
+            required: crate::REQUIRED_NIGHTLY,
         });
     }
 

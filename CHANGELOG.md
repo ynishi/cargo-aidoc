@@ -19,6 +19,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [0.2.2] — 2026-08-15
+
+### Added
+
+- **`REQUIRED_NIGHTLY`**, public, and rustdoc now runs under it instead
+  of `nightly`. Every nightly emits exactly one rustdoc JSON
+  `format_version` and it changes whenever rustdoc's types do, so
+  asking for `nightly` asked for "whatever the schema is today" — a
+  moving target a fixed `rustdoc-types` cannot hit for long. A
+  consumer's CI installed the current nightly and the run failed on
+  `expected 60, found 61`: two tools disagreeing, in a run about
+  neither. The pin travels with the `rustdoc-types` version; bump them
+  together. Public so a consumer installs what the binary asks for
+  rather than copying a date that then rots:
+  `rustup toolchain install "$(cargo aidoc --print-required-toolchain)"`.
+  Same shape as `public_api::MINIMUM_NIGHTLY_RUST_VERSION`.
+- **`--print-required-toolchain`** prints it and exits, before anything
+  that needs a workspace.
+- **`--toolchain` / `Config::toolchain`** overrides the pin, for trying
+  a format this build does not yet read.
+
+### Changed
+
+- rustdoc is spawned as `rustup run <toolchain> cargo rustdoc` rather
+  than `cargo +<toolchain> rustdoc`. Equivalent where the rustup proxy
+  is what gets spawned, and reliable where it is not — a `+toolchain`
+  argument reaching a real `cargo` is an unknown subcommand, which is
+  how the same call fails on Windows for other rustdoc-JSON consumers.
+- The format-mismatch error names the toolchain it ran under, the one
+  this build reads, and the `rustup` command that fixes it. Previously
+  it said `expected 60, found 61`, from which the answer is not
+  discoverable.
+
 ## [0.2.1] — 2026-08-15
 
 ### Added

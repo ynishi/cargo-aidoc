@@ -61,6 +61,24 @@ pub struct Config {
     /// workspaces have no root package name to fall back on, so the
     /// stable title has to come from the caller.
     pub title: Option<String>,
+
+    /// Toolchain to run rustdoc under. Wired to `--toolchain` on the
+    /// CLI. `None` means [`crate::REQUIRED_NIGHTLY`], which is the
+    /// answer for everybody not deliberately testing a format this
+    /// build does not yet read.
+    ///
+    /// A dated name, not a channel: `nightly` resolves to whatever is
+    /// current, and the point of the pin is that the payload's
+    /// `format_version` has to match the `rustdoc-types` this was built
+    /// against.
+    pub toolchain: Option<String>,
+}
+
+impl Config {
+    /// The toolchain rustdoc will be run under.
+    pub fn toolchain(&self) -> &str {
+        self.toolchain.as_deref().unwrap_or(crate::REQUIRED_NIGHTLY)
+    }
 }
 
 impl Default for Config {
@@ -74,6 +92,7 @@ impl Default for Config {
             platforms: Vec::new(),
             emit_error_catalog: false,
             title: None,
+            toolchain: None,
         }
     }
 }

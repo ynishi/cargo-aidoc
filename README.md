@@ -4,7 +4,7 @@ Generate LLM-facing doc artifacts (`llms.txt` / narrative markdown /
 deterministic JSON) from rustdoc JSON.
 
 `cargo-aidoc` walks a Rust workspace with `cargo_metadata`, runs
-`cargo +nightly rustdoc --output-format json` for each crate, and
+`rustdoc --output-format json` for each crate under a pinned nightly, and
 projects the resulting API surface into artifacts that LLM-facing doc
 services and tools can consume:
 
@@ -67,12 +67,29 @@ to `platform::apply_overlays`; see `crates/aidoc-core/src/platform.rs`.
 
 ## Prerequisites
 
-- A `nightly` Rust toolchain must be available to `rustup` — the
-  pipeline shells out to `cargo +nightly rustdoc -- -Zunstable-options
-  --output-format json`.
-- The `rustdoc-types` crate is version-locked; if the nightly you use
-  emits a different `format_version` you'll see a typed
-  `FormatVersionMismatch` error rather than silent garbage.
+**One dated nightly, and this binary tells you which.**
+
+```bash
+rustup toolchain install "$(cargo aidoc --print-required-toolchain)"
+```
+
+rustdoc's JSON payload carries a `format_version`; every nightly emits
+exactly one, and it changes whenever rustdoc's types do. This crate
+parses with a fixed `rustdoc-types`, so the two are one pair — which is
+why the toolchain is pinned (`aidoc_core::REQUIRED_NIGHTLY`) rather than
+being the `nightly` channel. Asking for the channel asks for whatever
+the schema is today, and a CI job that installs the current nightly
+eventually fails on a disagreement between two tools rather than on the
+code under test.
+
+Read the pin from the binary rather than copying the date: a copy goes
+stale silently, and this moves whenever `rustdoc-types` does. Consumers
+who want it at compile time can use `aidoc_core::REQUIRED_NIGHTLY`.
+
+`--toolchain <name>` overrides it — the escape hatch for trying a format
+this build does not yet read. A mismatch is a typed
+`FormatVersionMismatch` naming both toolchains and the `rustup` command
+that resolves it, never silent garbage.
 
 ## MCP server
 

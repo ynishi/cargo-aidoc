@@ -30,13 +30,28 @@ pub enum Error {
     RustdocParse(#[from] serde_json::Error),
 
     /// The rustdoc JSON output uses a `format_version` this crate does not
-    /// yet support. Bumping `rustdoc-types` is the typical fix.
-    #[error("rustdoc format version mismatch: expected {expected}, found {found}")]
+    /// support.
+    ///
+    /// The message names the toolchain that produced the payload and the
+    /// one this build wants, because the reader of this error is usually
+    /// somebody whose CI just went red and who has no way to work out
+    /// from "expected 60, found 61" that the answer is a toolchain
+    /// install.
+    #[error(
+        "rustdoc format version mismatch: expected {expected}, found {found} (ran under \
+         `{ran_under}`). This build reads what `{required}` emits — install it with \
+         `rustup toolchain install {required}`, or pass `--toolchain` to run under another."
+    )]
     FormatVersionMismatch {
         /// The `format_version` this crate was built against.
         expected: u32,
         /// The `format_version` actually present in the JSON payload.
         found: u32,
+        /// The toolchain rustdoc was run under.
+        ran_under: String,
+        /// The toolchain this build is built to read
+        /// ([`crate::REQUIRED_NIGHTLY`]).
+        required: &'static str,
     },
 
     /// An I/O error while reading rustdoc JSON or writing output artifacts.

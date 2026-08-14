@@ -65,6 +65,20 @@ struct Cli {
     /// checkouts.
     #[arg(long, value_name = "TITLE")]
     title: Option<String>,
+
+    /// Toolchain to run rustdoc under. Defaults to the dated nightly
+    /// whose JSON format this build reads — pass this only to try a
+    /// format the build does not yet support.
+    #[arg(long, value_name = "TOOLCHAIN")]
+    toolchain: Option<String>,
+
+    /// Print the toolchain this build needs, and exit.
+    ///
+    /// So a CI job installs exactly the right one without copying a
+    /// date that then goes stale:
+    /// `rustup toolchain install "$(cargo aidoc --print-required-toolchain)"`.
+    #[arg(long)]
+    print_required_toolchain: bool,
 }
 
 fn main() -> ExitCode {
@@ -86,6 +100,13 @@ fn main() -> ExitCode {
             };
         }
     };
+
+    // Before anything that needs a workspace: this answers a question
+    // about the binary, and a CI job asks it to decide what to install.
+    if cli.print_required_toolchain {
+        println!("{}", aidoc_core::REQUIRED_NIGHTLY);
+        return ExitCode::SUCCESS;
+    }
 
     match run(cli) {
         Ok(code) => code,
@@ -132,6 +153,7 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
         platforms,
         emit_error_catalog: cli.errors,
         title: cli.title,
+        toolchain: cli.toolchain,
         ..Config::default()
     };
 

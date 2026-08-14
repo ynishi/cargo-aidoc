@@ -79,8 +79,13 @@ impl IndexedWorkspace {
             };
 
             let manifest_path = package.manifest_path.as_std_path();
-            let crate_data =
-                rustdoc::build_and_parse(&target, &package_name, manifest_path, &root)?;
+            let crate_data = rustdoc::build_and_parse(
+                &target,
+                &package_name,
+                manifest_path,
+                &root,
+                config.toolchain(),
+            )?;
 
             let root_module_doc = crate_data
                 .index

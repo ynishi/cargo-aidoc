@@ -40,6 +40,31 @@ pub mod lint;
 pub mod platform;
 mod rustdoc;
 
+/// The nightly toolchain whose rustdoc JSON this build can read.
+///
+/// rustdoc's JSON payload carries a `format_version`, every nightly
+/// emits exactly one, and it changes whenever rustdoc's types do. This
+/// crate parses with a fixed `rustdoc-types`, so the two are one pair:
+/// **bump `rustdoc-types` and this constant in the same commit.**
+///
+/// It is public because the alternative is every consumer copying a
+/// date into their CI and not noticing when it rots. Install what this
+/// binary asks for:
+///
+/// ```bash
+/// rustup toolchain install "$(cargo aidoc --print-required-toolchain)"
+/// ```
+///
+/// Asking for `nightly` instead was the previous behaviour and is a
+/// moving target by construction: a consumer's CI installs the current
+/// nightly, the format has moved on, and the run fails on a
+/// disagreement between two tools rather than on the code under test.
+///
+/// Current value tracks `rustdoc-types 0.60` (`format_version` 60),
+/// whose window upstream runs from the commit that raised 59→60 to the
+/// one that raised 60→61.
+pub const REQUIRED_NIGHTLY: &str = "nightly-2026-07-07";
+
 pub use config::{Config, Platform, Preset, UnknownPlatform};
 pub use error::{Error, Result};
 pub use error_catalog::{ErrorEntry, Snippet};
