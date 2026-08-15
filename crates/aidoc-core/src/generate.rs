@@ -123,6 +123,18 @@ pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Result<V
         render_llms_full(&artifacts),
     ));
 
+    // Last, and deliberately after `llms-full.txt` is rendered: this is
+    // a record *about* the artifact set rather than a part of it. The
+    // concatenation above takes `.md` only, so a `.json` here is safe
+    // either way — the ordering says which of the two facts is load
+    // bearing.
+    if let Some(triple) = workspace.target_triple() {
+        artifacts.push(Artifact::in_out_dir(
+            crate::manifest::MANIFEST_PATH,
+            crate::manifest::Manifest::new(triple).render()?,
+        ));
+    }
+
     Ok(artifacts)
 }
 

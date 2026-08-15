@@ -21,6 +21,8 @@ services and tools can consume:
 - **`api/<crate>.json`** — key-sorted deterministic public-API surface
   (`{ crate, version, items: [{ path, kind, docs? }] }`) usable as a
   `--check --strict` drift target.
+- **`aidoc-manifest.json`** — which target triple the artifacts above
+  describe. See [One target per artifact set](#one-target-per-artifact-set).
 
 ## Workspace layout
 
@@ -45,8 +47,41 @@ cargo aidoc --platform context7       # also emit context7.json at the repo root
 Exit code contract:
 
 - `0` — clean run (or `--check` found no drift).
-- `1` — pipeline error (rustdoc failed, I/O, config invalid).
+- `1` — pipeline error (rustdoc failed, I/O, config invalid), or a write
+  refused because the committed artifacts describe another target.
 - `2` — lint violation, or `--check` detected drift.
+- `3` — `--check` could not answer: the committed artifacts describe
+  another target.
+
+## One target per artifact set
+
+rustdoc resolves `cfg` before it emits anything, so a module behind
+`#[cfg(target_os = "macos")]` is in the JSON payload on a Mac and absent
+everywhere else. The artifacts are therefore a property of the source
+*and* the host that documented it, and `aidoc-manifest.json` records
+which host that was.
+
+Both front ends compare that record against the payload's own target
+before doing anything:
+
+```bash
+cargo aidoc            # on another target: refuses to write, exit 1
+cargo aidoc --check    # on another target: "NOT CHECKED", exit 3
+cargo aidoc --retarget # move the artifacts to this target, on purpose
+```
+
+The refusal is the point. Regenerating from the wrong host deletes every
+item only the recorded target documents, and that deletion is shaped
+exactly like an ordinary regeneration in the diff — which is how it gets
+committed and reviewed without anybody seeing it.
+
+Two consequences worth stating:
+
+- An artifact set with **no** manifest (committed before 0.3.0) is
+  treated as permission to proceed. So the first `cargo aidoc` after
+  upgrading is unfenced — run it on the host the artifacts belong to.
+- Pick the target your CI runs the check on. Everyone else regenerates
+  there, or the check has nothing to say.
 
 ## External platform overlays (`--platform`)
 

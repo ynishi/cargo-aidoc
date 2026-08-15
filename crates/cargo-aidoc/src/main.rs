@@ -10,9 +10,18 @@
 //!
 //! - `0` — clean run, all artifacts written (or, in `--check` mode, all
 //!   on-disk artifacts already match).
-//! - `1` — pipeline error (rustdoc failed, I/O error, config invalid).
+//! - `1` — pipeline error (rustdoc failed, I/O error, config invalid),
+//!   or a write refused because the committed artifacts describe
+//!   another target (see [`aidoc_core::manifest`]).
 //! - `2` — lint violation, or `--check` detected a drift between the
 //!   generated artifacts and the on-disk copy.
+//! - `3` — `--check` could not answer: the committed artifacts describe
+//!   another target, so any diff found here is about `cfg` resolution
+//!   rather than about whether they are stale. Distinct from 2 because
+//!   the two want opposite reactions — 2 means regenerate, 3 means this
+//!   host cannot say. A caller that treats every non-zero code as
+//!   failure keeps its old behaviour minus the false red; one that
+//!   wants "check where it can be checked" branches on 3.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -71,6 +80,17 @@ struct Cli {
     /// format the build does not yet support.
     #[arg(long, value_name = "TOOLCHAIN")]
     toolchain: Option<String>,
+
+    /// Move the committed artifacts to this host's target.
+    ///
+    /// Without it, a run that would overwrite artifacts generated for
+    /// another target refuses instead: `cfg`-gated items differ between
+    /// targets, so the overwrite silently deletes what the other one
+    /// documents. Pass this when moving the canonical target on
+    /// purpose — a project whose CI moved from macOS to Linux, say —
+    /// and commit the deletions as the deliberate change they then are.
+    #[arg(long)]
+    retarget: bool,
 
     /// Print the toolchain this build needs, and exit.
     ///
@@ -160,6 +180,45 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
     let report = aidoc_core::run(&workspace_root, &config)?;
 
     print_diagnostics(&report);
+
+    // Before either branch does its work: on a target mismatch, writing
+    // deletes another host's items and diffing compares two different
+    // questions. Neither is worth doing, and both look ordinary in
+    // their output, which is why this is checked here rather than left
+    // to the reader of a diff.
+    if let aidoc_core::TargetVerdict::Mismatch {
+        recorded,
+        generated,
+    } = aidoc_core::target_verdict(&report, &out_dir)?
+    {
+        let verdict = aidoc_core::TargetVerdict::Mismatch {
+            recorded: recorded.clone(),
+            generated,
+        };
+        for line in verdict.explain().unwrap_or_default().lines() {
+            eprintln!("cargo-aidoc: {line}");
+        }
+        if cli.check {
+            eprintln!(
+                "cargo-aidoc: cfg-gated items differ between the two, so a diff here says \
+                 nothing about whether the artifacts are stale."
+            );
+            eprintln!("cargo-aidoc: NOT CHECKED — re-run this on {recorded}.");
+            return Ok(ExitCode::from(3));
+        }
+        if !cli.retarget {
+            eprintln!(
+                "cargo-aidoc: writing here would drop every item only {recorded} documents, \
+                 which reads as an ordinary regeneration in the diff."
+            );
+            eprintln!(
+                "cargo-aidoc: refusing to write. Regenerate on {recorded}, or pass --retarget \
+                 to move the committed artifacts to this host."
+            );
+            return Ok(ExitCode::from(1));
+        }
+        eprintln!("cargo-aidoc: --retarget given; the artifacts now describe this host.");
+    }
 
     if cli.check {
         // Shared with the `aidoc_check` MCP tool via aidoc_core so

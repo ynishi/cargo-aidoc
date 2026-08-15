@@ -37,6 +37,7 @@ pub mod error_catalog;
 pub mod generate;
 pub mod index;
 pub mod lint;
+pub mod manifest;
 pub mod platform;
 mod rustdoc;
 
@@ -71,6 +72,7 @@ pub use error_catalog::{ErrorEntry, Snippet};
 pub use generate::{Artifact, ArtifactLocation};
 pub use index::{IndexedCrate, IndexedWorkspace};
 pub use lint::{Diagnostic, Level};
+pub use manifest::{Manifest, TargetVerdict};
 
 // `DiffSummary` and `classify_diffs` are defined below in this file;
 // re-export them for consumers that stick to `aidoc_core::` paths.
@@ -88,6 +90,13 @@ pub struct Report {
     pub artifacts: Vec<Artifact>,
     /// Lint findings. Empty on a fully clean run.
     pub diagnostics: Vec<Diagnostic>,
+    /// The target triple these artifacts describe, or [`None`] when the
+    /// run indexed no crates.
+    ///
+    /// Carried on the report so a front end can ask
+    /// [`target_verdict`] without re-running the index stage. See
+    /// [`manifest`] for what the answer is used for.
+    pub target: Option<String>,
 }
 
 impl Report {
@@ -98,6 +107,17 @@ impl Report {
             .iter()
             .any(|d| matches!(d.level, Level::Error))
     }
+}
+
+/// Compare what this run documented against what the artifact set in
+/// `out_dir` says it describes.
+///
+/// Both front ends call this before writing or diffing: on
+/// [`TargetVerdict::Mismatch`] a write deletes another host's items and
+/// a diff answers a question nobody asked. See [`manifest`] for the
+/// full reasoning.
+pub fn target_verdict(report: &Report, out_dir: &Path) -> Result<TargetVerdict> {
+    manifest::verdict(out_dir, report.target.as_deref())
 }
 
 /// Run the full index → generate → lint pipeline against the workspace
@@ -136,6 +156,7 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
     Ok(Report {
         artifacts,
         diagnostics,
+        target: workspace.target_triple().map(str::to_string),
     })
 }
 

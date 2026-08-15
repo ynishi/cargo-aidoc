@@ -66,6 +66,14 @@ pub struct RunParams {
     /// `#[derive(miette::Diagnostic)]` item in the workspace.
     #[serde(default)]
     pub errors: bool,
+    /// Move the committed artifacts to this host's target.
+    ///
+    /// `aidoc_gen` otherwise refuses to overwrite artifacts generated
+    /// for another target, because `cfg`-gated items differ between
+    /// targets and the overwrite deletes what the other one documents.
+    /// Ignored by `aidoc_check`, which never writes.
+    #[serde(default)]
+    pub retarget: bool,
 }
 
 /// Parameter shape for the `aidoc_error` tool.
@@ -252,7 +260,7 @@ fn text_resource(uri: &str, name: &str, description: &str) -> Resource {
 /// or, in check mode, the on-disk tree differs from what would be
 /// generated. Lint diagnostics ride the envelope but do not flip `ok`
 /// unless `strict = true` was set.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 struct Envelope {
     ok: bool,
     summary: String,
@@ -262,8 +270,26 @@ struct Envelope {
     written: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     diffs: Vec<String>,
+    /// Set when the committed artifacts describe a different target
+    /// than this host documented.
+    ///
+    /// Present on both tools and on both meanings — `aidoc_check` could
+    /// not answer, `aidoc_gen` refused to write — because a caller that
+    /// only reads `ok` would otherwise see a plain failure and retry
+    /// the thing that cannot work here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_mismatch: Option<TargetMismatchView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+/// The two triples behind a [`Envelope::target_mismatch`].
+#[derive(Debug, Serialize)]
+struct TargetMismatchView {
+    /// Triple the committed artifacts describe.
+    recorded: String,
+    /// Triple this run documented.
+    generated: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,10 +326,8 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
             return Envelope {
                 ok: false,
                 summary: format!("aidoc: pipeline failed: {err}"),
-                diagnostics: Vec::new(),
-                written: Vec::new(),
-                diffs: Vec::new(),
                 error: Some(err.to_string()),
+                ..Envelope::default()
             };
         }
     };
@@ -322,6 +346,51 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
         })
         .collect();
 
+    // The same fence `cargo aidoc` applies, for the same reason: on a
+    // target mismatch a diff answers a different question than the one
+    // asked, and a write deletes the recorded target's items. Kept in
+    // both front ends rather than inside `aidoc_core::run` because only
+    // the front end knows whether the caller asked to write.
+    match aidoc_core::target_verdict(&report, &out_dir) {
+        Ok(aidoc_core::TargetVerdict::Mismatch {
+            recorded,
+            generated,
+        }) if check || !params.retarget => {
+            let summary = if check {
+                format!(
+                    "aidoc: NOT CHECKED — the committed artifacts describe {recorded}, this \
+                     host documented {generated}. Re-run on {recorded}."
+                )
+            } else {
+                format!(
+                    "aidoc: refusing to write — the committed artifacts describe {recorded}, \
+                     this host documented {generated}. Regenerate on {recorded}, or pass \
+                     retarget to move them here."
+                )
+            };
+            return Envelope {
+                ok: false,
+                summary,
+                diagnostics,
+                target_mismatch: Some(TargetMismatchView {
+                    recorded,
+                    generated,
+                }),
+                ..Envelope::default()
+            };
+        }
+        Ok(_) => {}
+        Err(err) => {
+            return Envelope {
+                ok: false,
+                summary: format!("aidoc: target check failed: {err}"),
+                diagnostics,
+                error: Some(err.to_string()),
+                ..Envelope::default()
+            };
+        }
+    }
+
     if check {
         // Shared with `cargo aidoc --check` via aidoc_core so both
         // front ends produce the same actionable summary — critically,
@@ -334,9 +403,8 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
                     ok: false,
                     summary: format!("aidoc: diff failed: {err}"),
                     diagnostics,
-                    written: Vec::new(),
-                    diffs: Vec::new(),
                     error: Some(err.to_string()),
+                    ..Envelope::default()
                 };
             }
         };
@@ -347,9 +415,8 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
             ok,
             summary,
             diagnostics,
-            written: Vec::new(),
             diffs,
-            error: None,
+            ..Envelope::default()
         }
     } else {
         if let Err(err) = aidoc_core::write_report(&report, &out_dir, &workspace_root) {
@@ -357,9 +424,8 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
                 ok: false,
                 summary: format!("aidoc: write failed: {err}"),
                 diagnostics,
-                written: Vec::new(),
-                diffs: Vec::new(),
                 error: Some(err.to_string()),
+                ..Envelope::default()
             };
         }
         let written = report
@@ -378,8 +444,7 @@ fn run_pipeline(params: RunParams, check: bool) -> Envelope {
             summary,
             diagnostics,
             written,
-            diffs: Vec::new(),
-            error: None,
+            ..Envelope::default()
         }
     }
 }

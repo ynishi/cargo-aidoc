@@ -19,6 +19,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [0.3.0] — 2026-08-15
+
+### Added
+
+- **`aidoc-manifest.json`**, written beside the artifacts, recording the
+  target triple they describe. rustdoc resolves `cfg` before it emits
+  anything, so a module behind `#[cfg(target_os = "macos")]` is in the
+  payload on a Mac and absent everywhere else: the artifact set is a
+  property of the source *and* the host that documented it. Without the
+  record, neither front end could tell "somebody added a module and did
+  not regenerate" from "this host resolves `cfg` differently", and only
+  the first is drift. The file carries the triple and a schema version
+  and nothing else — a generator version or a timestamp would rewrite a
+  committed file on every run and turn the drift check into noise.
+- **`--retarget`** (`retarget` on the MCP tools) moves the committed
+  artifacts to the running host's target, for a project moving its
+  canonical target on purpose.
+- **`manifest` module** in `aidoc-core`: `Manifest`, `TargetVerdict`,
+  `manifest::verdict`, and `aidoc_core::target_verdict` — the comparison
+  both front ends run, in one place, so they cannot answer differently.
+- **`Report::target`** carries the triple the run documented, so a front
+  end can ask without re-running the index stage.
+- **`IndexedWorkspace::target_triple`** reads it off the payload's own
+  `Crate::target::triple` rather than off this process's `cfg`, so a
+  future `--target` would record the right answer without touching this.
+
+### Changed
+
+- **A generate run against artifacts recorded for another target now
+  refuses to write** (exit 1) instead of overwriting them. This is the
+  failure the record exists for: the overwrite drops every item only the
+  other target documents, and a diff of that deletion is shaped exactly
+  like an ordinary regeneration, so it ships. Observed in
+  [asterism](https://github.com/ynishi/asterism) — artifacts generated
+  on macOS, regenerated once from Linux, two `#[cfg(target_os =
+  "macos")]` modules silently gone from the committed inventory, and the
+  macOS CI then red on a drift that could not be reproduced from Linux.
+- **`--check` against artifacts recorded for another target now exits 3**
+  ("not checked") rather than 2 ("drift"). The two want opposite
+  reactions — regenerate, versus this host cannot say — and a caller
+  that treats any non-zero code as failure keeps its old behaviour minus
+  the false red. The MCP envelope grows `target_mismatch` for the same
+  distinction.
+- An artifact set with no manifest is treated as permission to proceed,
+  not as a mismatch; otherwise the fence would lock every existing
+  repository out of ever recording a triple. The consequence, worth
+  stating: the *first* generation after upgrading is unfenced, so it
+  should be run on the host the artifacts already belong to.
+
 ## [0.2.2] — 2026-08-15
 
 ### Added

@@ -66,6 +66,19 @@ pub enum Error {
         message: String,
     },
 
+    /// The committed `aidoc-manifest.json` exists but does not parse.
+    ///
+    /// Not folded into [`RustdocParse`](Self::RustdocParse): this is a
+    /// file this tool wrote, and the reader needs to know it is the
+    /// target record that is broken rather than a rustdoc payload.
+    #[error("{path} is not a readable aidoc manifest: {message}")]
+    Manifest {
+        /// Path to the unreadable manifest.
+        path: String,
+        /// The underlying parse failure.
+        message: String,
+    },
+
     /// The generate stage failed. Carries a compact index-stage summary so
     /// callers can report both the successful indexing pass and the failure
     /// site without an out-of-band channel.

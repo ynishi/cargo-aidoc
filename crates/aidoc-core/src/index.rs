@@ -47,6 +47,22 @@ pub struct IndexedWorkspace {
 }
 
 impl IndexedWorkspace {
+    /// The target triple every crate in this workspace was documented
+    /// for, or [`None`] when nothing was indexed.
+    ///
+    /// One value for the whole workspace because one run invokes
+    /// rustdoc the same way for every crate; the first payload's answer
+    /// is the run's answer. It is read off the payload rather than off
+    /// this process's own `cfg` so that a future `--target` would be
+    /// recorded correctly without touching this.
+    ///
+    /// See [`crate::manifest`] for what it is compared against and why.
+    pub fn target_triple(&self) -> Option<&str> {
+        self.crates
+            .first()
+            .map(|krate| krate.crate_data.target.triple.as_str())
+    }
+
     /// Enumerate the workspace at `workspace_root`, run rustdoc for every
     /// crate that is not excluded by `config`, and package the parsed
     /// results into an [`IndexedWorkspace`].
