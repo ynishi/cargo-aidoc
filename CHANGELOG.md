@@ -19,6 +19,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [0.3.1] — 2026-08-19
+
+### Added
+
+- **`[workspace.metadata.aidoc].exclude` is now read.** The
+  `Config.exclude` field existed and the index stage honored it, but
+  nothing populated it from the workspace manifest — the metadata table
+  `config.rs` documented was silently ignored, and an operator who wrote
+  it got byte-identical output and no signal. The index stage now unions
+  the manifest's list into the effective exclude set, and validates every
+  entry against the real package list: a name the workspace does not have
+  (a typo, or a crate since renamed or removed) fails the run with a
+  config error instead of excluding nothing. A present key that is not an
+  array of strings is a config error for the same reason. Motivating
+  case: a workspace whose `llms-full.txt` sits against the 512 KiB soft
+  cap and needs a pre-v0 crate family kept out of the artifact set.
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## [0.3.0] — 2026-08-15
 
 ### Added

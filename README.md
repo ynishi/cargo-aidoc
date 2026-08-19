@@ -53,6 +53,22 @@ Exit code contract:
 - `3` — `--check` could not answer: the committed artifacts describe
   another target.
 
+## Excluding crates (`[workspace.metadata.aidoc]`)
+
+Keep a crate family out of the artifact set — a pre-v0 plane, generated
+code, anything whose narrative would push `llms-full.txt` over its
+512 KiB soft cap — by listing package names in the workspace manifest:
+
+```toml
+[workspace.metadata.aidoc]
+exclude = ["teams-core", "teams-infra"]
+```
+
+Every entry must name a package the workspace actually has: a typo, or
+an entry left behind after a crate is renamed or removed, fails the run
+with a config error rather than excluding nothing — the one failure
+mode an exclude list cannot afford is being silently out of effect.
+
 ## One target per artifact set
 
 rustdoc resolves `cfg` before it emits anything, so a module behind

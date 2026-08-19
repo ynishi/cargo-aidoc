@@ -8,12 +8,13 @@
 //! The entry point is [`IndexedWorkspace::build`], which walks the
 //! workspace via `cargo_metadata` and invokes rustdoc once per crate.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::{MetadataCommand, TargetKind};
 
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::rustdoc::{self, Target};
 
 /// A single crate that has been indexed via rustdoc JSON.
@@ -77,16 +78,36 @@ impl IndexedWorkspace {
             .exec()?;
 
         let root: PathBuf = metadata.workspace_root.as_std_path().to_path_buf();
+
+        // The merge point config.rs promises: `[workspace.metadata.aidoc]`
+        // is read here, where cargo_metadata has already parsed the
+        // workspace manifest, and unioned with whatever the caller put in
+        // `config.exclude`. Validated against the real package list
+        // because the failure mode this field exists for is silent — an
+        // entry that matches nothing excludes nothing, the artifact grows
+        // anyway, and the operator reads the unchanged output as "the
+        // exclude did not work". A stale entry after a crate rename or
+        // removal fails the run for the same reason `aidoc-check` fails
+        // on drift: the committed configuration no longer describes the
+        // tree, and somebody should look.
+        let mut exclude = config.exclude.clone();
+        exclude.extend(exclude_from_workspace_metadata(
+            &metadata.workspace_metadata,
+        )?);
+
+        let package_names: HashSet<String> = metadata
+            .workspace_packages()
+            .iter()
+            .map(|package| package.name.to_string())
+            .collect();
+        validate_exclude(&exclude, &package_names)?;
+
         let mut crates = Vec::new();
 
         for package in metadata.workspace_packages() {
             let package_name = package.name.to_string();
 
-            if config
-                .exclude
-                .iter()
-                .any(|excluded| excluded == &package_name)
-            {
+            if exclude.iter().any(|excluded| excluded == &package_name) {
                 continue;
             }
 
@@ -144,4 +165,142 @@ fn select_target(targets: &[cargo_metadata::Target]) -> Option<Target<'_>> {
             None
         }
     })
+}
+
+/// Read crate names out of `[workspace.metadata.aidoc].exclude`.
+///
+/// `metadata` is the raw `[workspace.metadata]` table as cargo reported
+/// it (`Metadata::workspace_metadata`), `Value::Null` when the manifest
+/// has none. An absent `aidoc` table or an absent `exclude` key both
+/// mean "exclude nothing" — the field is opt-in. A present key that is
+/// not an array of strings is a config error rather than an empty list,
+/// because the misspelling that produces one (`exclude = "name"`, a
+/// nested table, a number in the list) would otherwise read exactly
+/// like success.
+fn exclude_from_workspace_metadata(metadata: &serde_json::Value) -> Result<Vec<String>> {
+    let Some(exclude) = metadata.get("aidoc").and_then(|aidoc| aidoc.get("exclude")) else {
+        return Ok(Vec::new());
+    };
+
+    let Some(entries) = exclude.as_array() else {
+        return Err(Error::Config {
+            message: format!(
+                "[workspace.metadata.aidoc].exclude must be an array of crate names, got: {exclude}"
+            ),
+        });
+    };
+
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| Error::Config {
+                    message: format!(
+                        "[workspace.metadata.aidoc].exclude entries must be strings, got: {entry}"
+                    ),
+                })
+        })
+        .collect()
+}
+
+/// Refuse an exclude list that names crates the workspace does not have.
+///
+/// An entry that matches nothing excludes nothing, and the run's output
+/// is indistinguishable from the exclude never having been written —
+/// the one failure mode this feature cannot afford, since its whole job
+/// is to be visibly in effect. Stale entries (a renamed or removed
+/// crate) fail here too, deliberately: the configuration should follow
+/// the tree the same way `docs/aidoc/` itself does.
+fn validate_exclude(exclude: &[String], package_names: &HashSet<String>) -> Result<()> {
+    for name in exclude {
+        if !package_names.contains(name) {
+            return Err(Error::Config {
+                message: format!(
+                    "[workspace.metadata.aidoc].exclude names `{name}`, which is not a \
+                     workspace package — fix the spelling, or drop the entry if the \
+                     crate is gone"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn names(list: &[&str]) -> HashSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn exclude_absent_metadata_is_empty() {
+        assert!(
+            exclude_from_workspace_metadata(&serde_json::Value::Null)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exclude_absent_aidoc_table_is_empty() {
+        let metadata = json!({ "other-tool": { "exclude": ["x"] } });
+        assert!(
+            exclude_from_workspace_metadata(&metadata)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exclude_absent_key_is_empty() {
+        let metadata = json!({ "aidoc": {} });
+        assert!(
+            exclude_from_workspace_metadata(&metadata)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exclude_reads_names_in_order() {
+        let metadata = json!({ "aidoc": { "exclude": ["teams-core", "teams-infra"] } });
+        assert_eq!(
+            exclude_from_workspace_metadata(&metadata).unwrap(),
+            vec!["teams-core".to_string(), "teams-infra".to_string()]
+        );
+    }
+
+    #[test]
+    fn exclude_rejects_non_array() {
+        let metadata = json!({ "aidoc": { "exclude": "teams-core" } });
+        let err = exclude_from_workspace_metadata(&metadata).unwrap_err();
+        assert!(matches!(err, Error::Config { .. }), "got: {err}");
+    }
+
+    #[test]
+    fn exclude_rejects_non_string_entry() {
+        let metadata = json!({ "aidoc": { "exclude": ["teams-core", 7] } });
+        let err = exclude_from_workspace_metadata(&metadata).unwrap_err();
+        assert!(matches!(err, Error::Config { .. }), "got: {err}");
+    }
+
+    #[test]
+    fn validate_accepts_known_names_and_empty() {
+        let known = names(&["a", "b"]);
+        validate_exclude(&[], &known).unwrap();
+        validate_exclude(&["a".to_string(), "b".to_string()], &known).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_unknown_name() {
+        let err =
+            validate_exclude(&["tems-core".to_string()], &names(&["teams-core"])).unwrap_err();
+        assert!(matches!(err, Error::Config { .. }), "got: {err}");
+        assert!(err.to_string().contains("tems-core"), "got: {err}");
+    }
 }
