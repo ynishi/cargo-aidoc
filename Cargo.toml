@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 authors = ["Yutaka Nishimura <ytk.nishimura@gmail.com>"]
 license = "MIT OR Apache-2.0"
@@ -16,9 +16,9 @@ keywords = ["rustdoc", "llm", "documentation", "cargo-subcommand", "mcp"]
 categories = ["development-tools::cargo-plugins", "command-line-utilities"]
 
 [workspace.dependencies]
-aidoc-core = { path = "crates/aidoc-core", version = "0.3.1" }
-cargo-aidoc = { path = "crates/cargo-aidoc", version = "0.3.1" }
-aidoc-mcp = { path = "crates/aidoc-mcp", version = "0.3.1" }
+aidoc-core = { path = "crates/aidoc-core", version = "0.4.0" }
+cargo-aidoc = { path = "crates/cargo-aidoc", version = "0.4.0" }
+aidoc-mcp = { path = "crates/aidoc-mcp", version = "0.4.0" }
 
 # External dependencies
 cargo_metadata = "0.23"

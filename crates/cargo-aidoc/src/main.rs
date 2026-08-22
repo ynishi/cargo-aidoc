@@ -318,12 +318,19 @@ fn print_size_report(report: &Report) {
 
     let total: usize = full.chunks.iter().map(|c| c.bytes).sum();
     for chunk in &full.chunks {
-        let tag = match (full.cap_bytes.is_some(), dropped.contains(chunk.path.as_str())) {
+        let tag = match (
+            full.cap_bytes.is_some(),
+            dropped.contains(chunk.path.as_str()),
+        ) {
             (false, _) => "",
             (true, false) => "KEEP  ",
             (true, true) => "DROP  ",
         };
-        println!("  {tag}{path}  {bytes}", path = chunk.path, bytes = chunk.bytes);
+        println!(
+            "  {tag}{path}  {bytes}",
+            path = chunk.path,
+            bytes = chunk.bytes
+        );
     }
     println!(
         "  total: {total} bytes in {n} chunk(s); emitted: {final_bytes} bytes ({d} dropped)",

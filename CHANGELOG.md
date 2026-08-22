@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [0.4.0] — 2026-08-22
+
+### Added
+
 - **Opt-in `llms-full.txt` byte cap.**
   `[workspace.metadata.aidoc].llms-full-max-bytes` (or
   `--llms-full-max-bytes`, which wins) truncates the file at chunk

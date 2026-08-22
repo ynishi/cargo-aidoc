@@ -137,12 +137,10 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
     let workspace = IndexedWorkspace::build(workspace_root, config)?;
     let index_summary = format!("indexed {} crate(s)", workspace.crates.len());
 
-    let (mut artifacts, llms_full) =
-        generate::render_all(&workspace, config.title.as_deref()).map_err(|source| {
-            Error::Generate {
-                source: Box::new(source),
-                index_summary: index_summary.clone(),
-            }
+    let (mut artifacts, llms_full) = generate::render_all(&workspace, config.title.as_deref())
+        .map_err(|source| Error::Generate {
+            source: Box::new(source),
+            index_summary: index_summary.clone(),
         })?;
 
     if config.emit_error_catalog {

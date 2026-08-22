@@ -163,4 +163,3 @@ fn walk_lint_modules(
         walk_lint_modules(index, child_module, &path, crate_name, diagnostics);
     }
 }
-
