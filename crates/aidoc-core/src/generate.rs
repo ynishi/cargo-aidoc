@@ -88,7 +88,15 @@ impl Artifact {
 /// discovery order, then `api/<crate>.json` for each crate, and finally
 /// `llms-full.txt`. Callers that want to write only a subset can filter
 /// by `path`.
-pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Result<Vec<Artifact>> {
+///
+/// The second return value carries the `llms-full.txt` size facts
+/// (per-chunk breakdown, cap outcome), captured at the moment that
+/// file was concatenated. See [`LlmsFullReport`] for why it cannot be
+/// recomputed later.
+pub fn render_all(
+    workspace: &IndexedWorkspace,
+    title: Option<&str>,
+) -> Result<(Vec<Artifact>, LlmsFullReport)> {
     let mut artifacts = Vec::new();
 
     artifacts.push(Artifact::in_out_dir(
@@ -118,10 +126,24 @@ pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Result<V
         ));
     }
 
-    artifacts.push(Artifact::in_out_dir(
-        "llms-full.txt",
-        render_llms_full(&artifacts),
-    ));
+    let llms_full = match workspace.llms_full_max_bytes {
+        Some(cap) => {
+            let (body, llms_full) = render_llms_full_capped(&artifacts, cap)?;
+            artifacts.push(Artifact::in_out_dir("llms-full.txt", body));
+            llms_full
+        }
+        None => {
+            let body = render_llms_full(&artifacts);
+            let llms_full = LlmsFullReport {
+                cap_bytes: None,
+                chunks: llms_full_chunk_sizes(&artifacts),
+                dropped: Vec::new(),
+                final_bytes: body.len(),
+            };
+            artifacts.push(Artifact::in_out_dir("llms-full.txt", body));
+            llms_full
+        }
+    };
 
     // Last, and deliberately after `llms-full.txt` is rendered: this is
     // a record *about* the artifact set rather than a part of it. The
@@ -135,7 +157,7 @@ pub fn render_all(workspace: &IndexedWorkspace, title: Option<&str>) -> Result<V
         ));
     }
 
-    Ok(artifacts)
+    Ok((artifacts, llms_full))
 }
 
 /// Append the error-catalog artifact set to `artifacts` in place.
@@ -446,17 +468,182 @@ pub fn render_module(krate: &IndexedCrate, module: &PublicModule<'_>) -> String 
 /// any future JSON payloads) — those already have their own well-known
 /// paths, and duplicating them here would only bloat the file.
 pub fn render_llms_full(artifacts: &[Artifact]) -> String {
-    let mut out = String::new();
+    llms_full_chunks(artifacts)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect()
+}
+
+/// Build the chunk list `llms-full.txt` is concatenated from: one
+/// `(path, text)` pair per markdown artifact, in emission order. The
+/// text includes the `<!-- path -->` header and trailing blank line, so
+/// `text.len()` is exactly what the chunk contributes to the file.
+fn llms_full_chunks(artifacts: &[Artifact]) -> Vec<(String, String)> {
+    let mut chunks = Vec::new();
     for artifact in artifacts {
         if !artifact.path.ends_with(".md") {
             continue;
         }
-        writeln!(&mut out, "<!-- {} -->", artifact.path).unwrap();
-        out.push_str(&artifact.body);
+        let mut text = String::new();
+        writeln!(&mut text, "<!-- {} -->", artifact.path).unwrap();
+        text.push_str(&artifact.body);
         if !artifact.body.ends_with('\n') {
-            out.push('\n');
+            text.push('\n');
         }
-        out.push('\n');
+        text.push('\n');
+        chunks.push((artifact.path.clone(), text));
+    }
+    chunks
+}
+
+/// The size of one `llms-full.txt` chunk, as reported by
+/// [`llms_full_chunk_sizes`] and [`LlmsFullReport::dropped`].
+///
+/// `bytes` counts the whole chunk as it lands in the file — the
+/// `<!-- path -->` header and trailing blank line included — so the
+/// numbers sum to the file size and match what a byte cap counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkSize {
+    /// Artifact path of the chunk's source (e.g. `aidoc-core/index.md`).
+    pub path: String,
+    /// Bytes this chunk contributes to `llms-full.txt`.
+    pub bytes: usize,
+}
+
+/// What the `llms-full.txt` render did, sizes included.
+///
+/// Captured at render time — recomputing from a finished artifact set
+/// would count chunks (error-catalog pages, overlay edits) that were
+/// appended or modified *after* `llms-full.txt` was concatenated, and
+/// the numbers would stop matching the file. This is the data source
+/// for `--size-report` and for the front ends' truncation notice.
+#[derive(Debug, Clone)]
+pub struct LlmsFullReport {
+    /// The cap that was applied, in bytes; `None` when no cap was
+    /// configured (the default).
+    pub cap_bytes: Option<usize>,
+    /// Every chunk the file was assembled from, in emission order,
+    /// dropped ones included.
+    pub chunks: Vec<ChunkSize>,
+    /// Chunks omitted to fit the cap, in emission order. Empty when no
+    /// cap is set or the file fit without truncation.
+    pub dropped: Vec<ChunkSize>,
+    /// Size of the emitted `llms-full.txt`, notice included. Always
+    /// `<= cap_bytes` when a cap is set.
+    pub final_bytes: usize,
+}
+
+impl LlmsFullReport {
+    /// True when the cap actually removed content.
+    pub fn truncated(&self) -> bool {
+        !self.dropped.is_empty()
+    }
+}
+
+/// Per-chunk byte breakdown of `llms-full.txt` for a given artifact
+/// set. This is the `--size-report` data source; it deliberately reuses
+/// the same chunk builder as the renderers, so the numbers are the
+/// ones the cap counts.
+pub fn llms_full_chunk_sizes(artifacts: &[Artifact]) -> Vec<ChunkSize> {
+    llms_full_chunks(artifacts)
+        .into_iter()
+        .map(|(path, text)| ChunkSize {
+            path,
+            bytes: text.len(),
+        })
+        .collect()
+}
+
+/// Render `llms-full.txt` under a byte cap.
+///
+/// Chunks are kept in emission order and dropped from the end, one
+/// whole chunk at a time — the file is never cut mid-document. When
+/// anything is dropped, a notice listing every omitted chunk is
+/// appended to the file itself, so the artifact self-reports what is
+/// missing; the returned [`LlmsFullReport`] carries the same facts
+/// for the front end. The result is a pure function of the inputs, so
+/// `--check` drift detection is unaffected.
+///
+/// A cap too small to hold even the empty-file-plus-notice case is a
+/// config error: emitting a file that silently exceeds the cap the
+/// operator wrote would defeat the one thing the cap promises.
+pub fn render_llms_full_capped(
+    artifacts: &[Artifact],
+    cap: usize,
+) -> Result<(String, LlmsFullReport)> {
+    let mut kept = llms_full_chunks(artifacts);
+    let chunks: Vec<ChunkSize> = kept
+        .iter()
+        .map(|(path, text)| ChunkSize {
+            path: path.clone(),
+            bytes: text.len(),
+        })
+        .collect();
+    let mut kept_bytes: usize = kept.iter().map(|(_, text)| text.len()).sum();
+    let mut dropped: Vec<ChunkSize> = Vec::new();
+
+    loop {
+        let notice_len = truncation_notice(cap, &dropped).len();
+        if kept_bytes + notice_len <= cap {
+            break;
+        }
+        let Some((path, text)) = kept.pop() else {
+            return Err(crate::error::Error::Config {
+                message: format!(
+                    "llms-full-max-bytes = {cap} cannot fit any content: the truncation \
+                     notice alone needs {notice_len} bytes — raise the cap"
+                ),
+            });
+        };
+        kept_bytes -= text.len();
+        // Popped from the end, so insert at the front to keep the
+        // dropped list in emission order.
+        dropped.insert(
+            0,
+            ChunkSize {
+                path,
+                bytes: text.len(),
+            },
+        );
+    }
+
+    let mut body: String = kept.into_iter().map(|(_, text)| text).collect();
+    body.push_str(&truncation_notice(cap, &dropped));
+    let final_bytes = body.len();
+
+    Ok((
+        body,
+        LlmsFullReport {
+            cap_bytes: Some(cap),
+            chunks,
+            dropped,
+            final_bytes,
+        },
+    ))
+}
+
+/// The in-file notice a truncated `llms-full.txt` ends with. Empty when
+/// nothing was dropped, so an untruncated capped render is
+/// byte-identical to the uncapped one.
+fn truncation_notice(cap: usize, dropped: &[ChunkSize]) -> String {
+    if dropped.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    writeln!(
+        &mut out,
+        "<!-- TRUNCATED: llms-full-max-bytes = {cap}; {n} chunk(s) omitted: -->",
+        n = dropped.len(),
+    )
+    .unwrap();
+    for chunk in dropped {
+        writeln!(
+            &mut out,
+            "<!-- omitted: {path} ({bytes} bytes) -->",
+            path = chunk.path,
+            bytes = chunk.bytes,
+        )
+        .unwrap();
     }
     out
 }
@@ -894,5 +1081,86 @@ mod tests {
         assert_eq!(module_slug("sub::index"), "sub__index");
         // Normal module names round-trip unchanged.
         assert_eq!(module_slug("config"), "config");
+    }
+
+    fn md(path: &str, body: &str) -> Artifact {
+        Artifact::in_out_dir(path, body)
+    }
+
+    fn fixture() -> Vec<Artifact> {
+        // The last chunk is deliberately the big one, so a cap that
+        // holds the first two plus a truncation notice forces exactly
+        // one drop.
+        let beta = "beta body line\n".repeat(40);
+        vec![
+            md("a/index.md", "alpha body\n"),
+            md("a/one.md", "one body, somewhat longer than alpha\n"),
+            md("b/index.md", &beta),
+            // Non-markdown artifacts must never appear in llms-full.
+            Artifact::in_out_dir("api/a.json", "{}\n"),
+        ]
+    }
+
+    #[test]
+    fn capped_render_that_fits_is_byte_identical_to_uncapped() {
+        let artifacts = fixture();
+        let uncapped = render_llms_full(&artifacts);
+        let (body, truncation) = render_llms_full_capped(&artifacts, uncapped.len()).unwrap();
+        assert_eq!(body, uncapped);
+        assert!(truncation.dropped.is_empty());
+        assert_eq!(truncation.final_bytes, uncapped.len());
+    }
+
+    #[test]
+    fn overflow_drops_whole_chunks_from_the_end_and_self_reports() {
+        let artifacts = fixture();
+        let sizes = llms_full_chunk_sizes(&artifacts);
+        assert_eq!(sizes.len(), 3, "json must not count as a chunk");
+
+        // Cap that fits the first two chunks plus a notice, but not the
+        // third: generous headroom, then check the exact outcome.
+        let cap = sizes[0].bytes + sizes[1].bytes + 200;
+        let (body, truncation) = render_llms_full_capped(&artifacts, cap).unwrap();
+
+        assert!(truncation.final_bytes <= cap);
+        assert_eq!(body.len(), truncation.final_bytes);
+        assert_eq!(
+            truncation
+                .dropped
+                .iter()
+                .map(|c| c.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b/index.md"],
+        );
+        // Kept chunks are intact (no mid-chunk cut) and in order.
+        assert!(body.starts_with("<!-- a/index.md -->\nalpha body\n"));
+        assert!(body.contains("<!-- a/one.md -->"));
+        // The file itself says what is missing.
+        assert!(body.contains(&format!(
+            "<!-- TRUNCATED: llms-full-max-bytes = {cap}; 1 chunk(s) omitted: -->"
+        )));
+        assert!(body.contains(&format!(
+            "<!-- omitted: b/index.md ({} bytes) -->",
+            sizes[2].bytes
+        )));
+    }
+
+    #[test]
+    fn cap_too_small_for_any_content_is_a_config_error() {
+        let artifacts = fixture();
+        let err = render_llms_full_capped(&artifacts, 1).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::Config { .. }),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn truncation_is_deterministic() {
+        let artifacts = fixture();
+        let cap = 300;
+        let first = render_llms_full_capped(&artifacts, cap).unwrap();
+        let second = render_llms_full_capped(&artifacts, cap).unwrap();
+        assert_eq!(first.0, second.0);
     }
 }

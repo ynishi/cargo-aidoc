@@ -1,5 +1,4 @@
-//! Lint stage: report doc-coverage issues on top of an indexed workspace
-//! (and, for size-related lints, on top of the generated artifacts).
+//! Lint stage: report doc-coverage issues on top of an indexed workspace.
 //!
 //! Lints are advisory by default. In strict mode every warning is
 //! promoted to an error and the pipeline is expected to exit with code
@@ -14,7 +13,6 @@
 use rustdoc_types::{ItemEnum, Module, Visibility};
 
 use crate::config::Config;
-use crate::generate::Artifact;
 use crate::index::{IndexedCrate, IndexedWorkspace};
 
 /// Severity of a single [`Diagnostic`].
@@ -38,45 +36,35 @@ pub struct Diagnostic {
     /// Stable machine-readable identifier (e.g. `"missing-crate-doc"`).
     /// Callers filter and route by this code.
     pub code: &'static str,
-    /// Human-readable location, e.g. `crate:aidoc-core`,
-    /// `module:aidoc_core::config`, or `artifact:llms-full.txt`.
+    /// Human-readable location, e.g. `crate:aidoc-core` or
+    /// `module:aidoc_core::config`.
     pub location: String,
     /// One-sentence description of the finding, ideally actionable.
     pub message: String,
 }
-
-/// Soft byte-size ceiling for `llms-full.txt`. Anything larger than
-/// this triggers a warning: LLM context budgets tend to be tight and
-/// bloated dumps are usually a sign that we're emitting more than the
-/// public API surface warrants.
-///
-/// This is a soft ceiling, not a hard cap; the artifact is emitted
-/// either way.
-pub const LLMS_FULL_SOFT_MAX_BYTES: usize = 512 * 1024;
 
 /// Minimum number of non-empty lines a crate-root `//!` block must have
 /// before it counts as "an actual narrative" instead of a stub. Missing
 /// or shorter narratives produce warnings.
 pub const CRATE_ROOT_MIN_NARRATIVE_LINES: usize = 5;
 
-/// Run every lint against `workspace` and `artifacts`, applying the
-/// strict-mode promotion from `config`.
+/// Run every lint against `workspace`, applying the strict-mode
+/// promotion from `config`.
 ///
-/// Returns diagnostics in emission order: crate-level lints first (in
-/// discovery order), then artifact-level lints. Callers that want a
-/// deterministic display order can sort by `(location, code)`.
-pub fn lint(
-    workspace: &IndexedWorkspace,
-    artifacts: &[Artifact],
-    config: &Config,
-) -> Vec<Diagnostic> {
+/// Returns diagnostics in emission order: crate-level lints in
+/// discovery order. Callers that want a deterministic display order can
+/// sort by `(location, code)`.
+///
+/// There is deliberately no artifact-size lint. `llms-full.txt` is a
+/// bulk-ingest convention with no spec- or platform-published size
+/// limit to enforce; a workspace that wants a bound opts in via
+/// `llms-full-max-bytes`, which truncates instead of warning.
+pub fn lint(workspace: &IndexedWorkspace, config: &Config) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     for krate in &workspace.crates {
         lint_crate(krate, &mut diagnostics);
     }
-
-    lint_artifacts(artifacts, &mut diagnostics);
 
     if config.strict {
         for diag in &mut diagnostics {
@@ -176,20 +164,3 @@ fn walk_lint_modules(
     }
 }
 
-fn lint_artifacts(artifacts: &[Artifact], diagnostics: &mut Vec<Diagnostic>) {
-    if let Some(full) = artifacts.iter().find(|a| a.path == "llms-full.txt")
-        && full.body.len() > LLMS_FULL_SOFT_MAX_BYTES
-    {
-        diagnostics.push(Diagnostic {
-            level: Level::Warn,
-            code: "llms-full-too-large",
-            location: "artifact:llms-full.txt".to_owned(),
-            message: format!(
-                "llms-full.txt is {actual} bytes (> soft cap {cap}); \
-                 consider trimming crate-root narratives or excluding low-signal crates",
-                actual = full.body.len(),
-                cap = LLMS_FULL_SOFT_MAX_BYTES,
-            ),
-        });
-    }
-}

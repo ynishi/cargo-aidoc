@@ -18,9 +18,8 @@
 //!    markdown, `llms-full.txt`, and a deterministic `api/<crate>.json`
 //!    for machine consumption (diffing, CI checks).
 //! 3. **Lint** — check the index against a set of doc-coverage rules
-//!    (crate root has a narrative, public modules are documented, the
-//!    generated `llms-full.txt` fits a soft size cap) and report
-//!    violations.
+//!    (crate root has a narrative, public modules are documented) and
+//!    report violations.
 //!
 //! Both `cargo-aidoc` (CLI) and `aidoc-mcp` (MCP server) are thin front
 //! ends over this pipeline; neither crate should contain pipeline logic
@@ -69,7 +68,7 @@ pub const REQUIRED_NIGHTLY: &str = "nightly-2026-07-07";
 pub use config::{Config, Platform, Preset, UnknownPlatform};
 pub use error::{Error, Result};
 pub use error_catalog::{ErrorEntry, Snippet};
-pub use generate::{Artifact, ArtifactLocation};
+pub use generate::{Artifact, ArtifactLocation, ChunkSize, LlmsFullReport};
 pub use index::{IndexedCrate, IndexedWorkspace};
 pub use lint::{Diagnostic, Level};
 pub use manifest::{Manifest, TargetVerdict};
@@ -97,6 +96,13 @@ pub struct Report {
     /// [`target_verdict`] without re-running the index stage. See
     /// [`manifest`] for what the answer is used for.
     pub target: Option<String>,
+    /// Size facts about `llms-full.txt`: its per-chunk byte breakdown
+    /// and what the byte cap (if one was configured via
+    /// `--llms-full-max-bytes` or
+    /// `[workspace.metadata.aidoc].llms-full-max-bytes`) kept and
+    /// dropped. Captured at render time; front ends use it for the
+    /// truncation notice and `--size-report`.
+    pub llms_full: generate::LlmsFullReport,
 }
 
 impl Report {
@@ -131,7 +137,7 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
     let workspace = IndexedWorkspace::build(workspace_root, config)?;
     let index_summary = format!("indexed {} crate(s)", workspace.crates.len());
 
-    let mut artifacts =
+    let (mut artifacts, llms_full) =
         generate::render_all(&workspace, config.title.as_deref()).map_err(|source| {
             Error::Generate {
                 source: Box::new(source),
@@ -151,12 +157,13 @@ pub fn run(workspace_root: &Path, config: &Config) -> Result<Report> {
 
     platform::apply_overlays(&workspace, &mut artifacts, &config.platforms)?;
 
-    let diagnostics = lint::lint(&workspace, &artifacts, config);
+    let diagnostics = lint::lint(&workspace, config);
 
     Ok(Report {
         artifacts,
         diagnostics,
         target: workspace.target_triple().map(str::to_string),
+        llms_full,
     })
 }
 

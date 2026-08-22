@@ -81,6 +81,23 @@ struct Cli {
     #[arg(long, value_name = "TOOLCHAIN")]
     toolchain: Option<String>,
 
+    /// Byte cap for `llms-full.txt`. When set, the file is truncated
+    /// at chunk boundaries to fit, and ends with a notice listing every
+    /// omitted chunk. Overrides
+    /// `[workspace.metadata.aidoc].llms-full-max-bytes`. Unset means no
+    /// cap and no size diagnostics: `llms-full.txt` is bulk-ingest
+    /// material for tools that chunk it, and no spec or platform
+    /// publishes a size limit to enforce.
+    #[arg(long, value_name = "BYTES")]
+    llms_full_max_bytes: Option<usize>,
+
+    /// Print a per-chunk byte breakdown of `llms-full.txt` — marking
+    /// which chunks a configured cap keeps and drops — and write
+    /// nothing. A dry run for tuning `llms-full-max-bytes` and
+    /// `exclude` before committing to either.
+    #[arg(long)]
+    size_report: bool,
+
     /// Move the committed artifacts to this host's target.
     ///
     /// Without it, a run that would overwrite artifacts generated for
@@ -173,6 +190,7 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
         platforms,
         emit_error_catalog: cli.errors,
         title: cli.title,
+        llms_full_max_bytes: cli.llms_full_max_bytes,
         toolchain: cli.toolchain,
         ..Config::default()
     };
@@ -180,6 +198,27 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
     let report = aidoc_core::run(&workspace_root, &config)?;
 
     print_diagnostics(&report);
+
+    // A size question, answered without touching the disk: neither the
+    // target-mismatch guard nor check/write below applies to it.
+    if cli.size_report {
+        print_size_report(&report);
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if report.llms_full.truncated() {
+        eprintln!(
+            "cargo-aidoc: llms-full.txt truncated to {final_bytes} bytes \
+             (llms-full-max-bytes = {cap}): {n} chunk(s) omitted — \
+             the file lists them at its end; --size-report shows the full breakdown",
+            final_bytes = report.llms_full.final_bytes,
+            cap = report
+                .llms_full
+                .cap_bytes
+                .expect("truncated() implies a cap"),
+            n = report.llms_full.dropped.len(),
+        );
+    }
 
     // Before either branch does its work: on a target mismatch, writing
     // deletes another host's items and diffing compares two different
@@ -260,6 +299,38 @@ fn run(cli: Cli) -> aidoc_core::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Print the `--size-report` view: one line per `llms-full.txt` chunk
+/// in emission order, `KEEP`/`DROP`-tagged when a cap is configured,
+/// then the totals. Goes to stdout — it is the command's answer, not
+/// commentary.
+fn print_size_report(report: &Report) {
+    let full = &report.llms_full;
+    let dropped: std::collections::HashSet<&str> =
+        full.dropped.iter().map(|c| c.path.as_str()).collect();
+
+    println!("llms-full.txt size report");
+    match full.cap_bytes {
+        Some(cap) => println!("  cap: {cap} bytes (llms-full-max-bytes)"),
+        None => println!("  cap: none (llms-full-max-bytes unset)"),
+    }
+
+    let total: usize = full.chunks.iter().map(|c| c.bytes).sum();
+    for chunk in &full.chunks {
+        let tag = match (full.cap_bytes.is_some(), dropped.contains(chunk.path.as_str())) {
+            (false, _) => "",
+            (true, false) => "KEEP  ",
+            (true, true) => "DROP  ",
+        };
+        println!("  {tag}{path}  {bytes}", path = chunk.path, bytes = chunk.bytes);
+    }
+    println!(
+        "  total: {total} bytes in {n} chunk(s); emitted: {final_bytes} bytes ({d} dropped)",
+        n = full.chunks.len(),
+        final_bytes = full.final_bytes,
+        d = full.dropped.len(),
+    );
 }
 
 fn print_diagnostics(report: &Report) {

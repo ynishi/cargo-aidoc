@@ -9,11 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in `llms-full.txt` byte cap.**
+  `[workspace.metadata.aidoc].llms-full-max-bytes` (or
+  `--llms-full-max-bytes`, which wins) truncates the file at chunk
+  boundaries — never mid-document, dropping from the end of the
+  emission order — and appends a notice listing every omitted chunk
+  with its size, so the artifact self-reports what is missing.
+  Truncation is a pure function of the inputs, so `--check` drift
+  detection is unaffected. A key that is not a positive integer is a
+  config error, as is a cap too small to fit even the notice — both
+  would otherwise read exactly like the cap being in effect.
+- **`--size-report`.** Prints the per-chunk byte breakdown of
+  `llms-full.txt` (marked `KEEP`/`DROP` when a cap is configured) and
+  writes nothing: a dry run for tuning `llms-full-max-bytes` and
+  `exclude`. The breakdown is captured at render time, because chunks
+  appended after the concatenation (error-catalog pages) would
+  otherwise make the numbers stop matching the file.
+
 ### Changed
 
 ### Deprecated
 
 ### Removed
+
+- **The `llms-full-too-large` lint and its 512 KiB soft cap.**
+  `llms-full.txt` is a community convention outside the
+  [llmstxt.org](https://llmstxt.org) spec, which itself recommends the
+  opposite shape (a small `llms.txt` index plus per-page markdown —
+  both of which this tool already emits); no spec or platform
+  publishes a size limit for it, and its consumers chunk the file
+  rather than reading it into a context window. Warning on a number
+  nobody defends made `--strict` fail runs for no enforceable reason.
+  A workspace that wants a bound opts in via `llms-full-max-bytes`
+  above, which truncates instead of warning. `lint()` accordingly no
+  longer takes the artifact list, and `LLMS_FULL_SOFT_MAX_BYTES` is
+  gone from the public API.
 
 ### Fixed
 

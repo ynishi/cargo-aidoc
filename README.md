@@ -17,7 +17,10 @@ services and tools can consume:
   reference grouped by kind (functions / types / traits / constants /
   macros), alphabetized within each group.
 - **`llms-full.txt`** — every markdown artifact concatenated with
-  chunk headers, for context-hungry LLM callers.
+  chunk headers. A bulk-ingest convention (not part of the
+  [llmstxt.org](https://llmstxt.org) spec): tools like doc indexers
+  chunk it rather than pasting it into a context window, so it has no
+  default size limit — see `llms-full-max-bytes` below to opt into one.
 - **`api/<crate>.json`** — key-sorted deterministic public-API surface
   (`{ crate, version, items: [{ path, kind, docs? }] }`) usable as a
   `--check --strict` drift target.
@@ -56,8 +59,8 @@ Exit code contract:
 ## Excluding crates (`[workspace.metadata.aidoc]`)
 
 Keep a crate family out of the artifact set — a pre-v0 plane, generated
-code, anything whose narrative would push `llms-full.txt` over its
-512 KiB soft cap — by listing package names in the workspace manifest:
+code, anything that does not belong in the published surface — by
+listing package names in the workspace manifest:
 
 ```toml
 [workspace.metadata.aidoc]
@@ -68,6 +71,35 @@ Every entry must name a package the workspace actually has: a typo, or
 an entry left behind after a crate is renamed or removed, fails the run
 with a config error rather than excluding nothing — the one failure
 mode an exclude list cannot afford is being silently out of effect.
+
+## Capping `llms-full.txt` (`llms-full-max-bytes`)
+
+There is no default size limit and no size warning: no spec or
+platform publishes a limit for `llms-full.txt` that a generator could
+enforce on their behalf, and its consumers chunk the file rather than
+reading it whole. A workspace that wants a bound anyway — a hosting
+cap, a repo-size policy — opts in:
+
+```toml
+[workspace.metadata.aidoc]
+llms-full-max-bytes = 524288
+```
+
+(or `--llms-full-max-bytes <BYTES>` on the CLI, which wins.) The file
+is then truncated at chunk boundaries — never mid-document, dropping
+from the end of the emission order — and ends with a notice listing
+every omitted chunk with its size, so the artifact itself says what is
+missing. Truncation is deterministic, so `--check` keeps working.
+
+To see what a cap would do before committing to it:
+
+```bash
+cargo aidoc --size-report --llms-full-max-bytes 524288
+```
+
+prints the per-chunk byte breakdown with each chunk marked `KEEP` or
+`DROP`, and writes nothing. Without a cap it still prints the sizes —
+useful for deciding what to `exclude`.
 
 ## One target per artifact set
 

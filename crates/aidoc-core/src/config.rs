@@ -62,6 +62,24 @@ pub struct Config {
     /// stable title has to come from the caller.
     pub title: Option<String>,
 
+    /// Byte cap for `llms-full.txt`. Wired to `--llms-full-max-bytes`
+    /// on the CLI; when unset here, the index stage reads
+    /// `[workspace.metadata.aidoc].llms-full-max-bytes` (CLI wins).
+    ///
+    /// `None` — the default — means no cap and no size diagnostics:
+    /// `llms-full.txt` is a bulk-ingest artifact (a community
+    /// convention, not part of [llmstxt.org](https://llmstxt.org)),
+    /// its consumers chunk and index it rather than pasting it into a
+    /// context window, and no spec or platform publishes a size limit
+    /// this tool could enforce on their behalf.
+    ///
+    /// `Some(n)` opts in to truncation: the file is cut at chunk
+    /// boundaries to fit `n` bytes, and the omitted chunks are listed
+    /// in a notice at the end of the file itself, so a reader holding
+    /// the artifact can see what is missing without any out-of-band
+    /// signal. See `generate::render_llms_full_capped`.
+    pub llms_full_max_bytes: Option<usize>,
+
     /// Toolchain to run rustdoc under. Wired to `--toolchain` on the
     /// CLI. `None` means [`crate::REQUIRED_NIGHTLY`], which is the
     /// answer for everybody not deliberately testing a format this
@@ -92,6 +110,7 @@ impl Default for Config {
             platforms: Vec::new(),
             emit_error_catalog: false,
             title: None,
+            llms_full_max_bytes: None,
             toolchain: None,
         }
     }

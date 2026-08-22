@@ -45,6 +45,13 @@ pub struct IndexedWorkspace {
     /// Indexed crates in the order they were discovered by cargo metadata.
     /// Callers should not assume alphabetic or dependency order.
     pub crates: Vec<IndexedCrate>,
+
+    /// Effective byte cap for `llms-full.txt`, merged here because this
+    /// is where the workspace manifest is parsed: the caller's
+    /// `Config::llms_full_max_bytes` (CLI) wins over
+    /// `[workspace.metadata.aidoc].llms-full-max-bytes`. `None` means
+    /// no cap. Consumed by `generate::render_all`.
+    pub llms_full_max_bytes: Option<usize>,
 }
 
 impl IndexedWorkspace {
@@ -95,6 +102,11 @@ impl IndexedWorkspace {
             &metadata.workspace_metadata,
         )?);
 
+        let llms_full_max_bytes = match config.llms_full_max_bytes {
+            Some(cap) => Some(cap),
+            None => llms_full_cap_from_workspace_metadata(&metadata.workspace_metadata)?,
+        };
+
         let package_names: HashSet<String> = metadata
             .workspace_packages()
             .iter()
@@ -137,7 +149,11 @@ impl IndexedWorkspace {
             });
         }
 
-        Ok(IndexedWorkspace { root, crates })
+        Ok(IndexedWorkspace {
+            root,
+            crates,
+            llms_full_max_bytes,
+        })
     }
 }
 
@@ -203,6 +219,33 @@ fn exclude_from_workspace_metadata(metadata: &serde_json::Value) -> Result<Vec<S
                 })
         })
         .collect()
+}
+
+/// Read `[workspace.metadata.aidoc].llms-full-max-bytes`.
+///
+/// Absent table or absent key both mean "no cap" — the field is
+/// opt-in. A present key that is not a positive integer is a config
+/// error rather than a silent no-cap, for the same reason `exclude`
+/// validates its entries: the misspelling that produces one
+/// (`llms-full-max-bytes = "500K"`, a float, zero) would otherwise
+/// read exactly like the cap being in effect.
+fn llms_full_cap_from_workspace_metadata(metadata: &serde_json::Value) -> Result<Option<usize>> {
+    let Some(value) = metadata
+        .get("aidoc")
+        .and_then(|aidoc| aidoc.get("llms-full-max-bytes"))
+    else {
+        return Ok(None);
+    };
+
+    match value.as_u64() {
+        Some(n) if n > 0 => Ok(Some(n as usize)),
+        _ => Err(Error::Config {
+            message: format!(
+                "[workspace.metadata.aidoc].llms-full-max-bytes must be a positive \
+                 integer (bytes), got: {value}"
+            ),
+        }),
+    }
 }
 
 /// Refuse an exclude list that names crates the workspace does not have.
@@ -287,6 +330,37 @@ mod tests {
         let metadata = json!({ "aidoc": { "exclude": ["teams-core", 7] } });
         let err = exclude_from_workspace_metadata(&metadata).unwrap_err();
         assert!(matches!(err, Error::Config { .. }), "got: {err}");
+    }
+
+    #[test]
+    fn cap_absent_metadata_is_none() {
+        assert_eq!(
+            llms_full_cap_from_workspace_metadata(&serde_json::Value::Null).unwrap(),
+            None
+        );
+        let metadata = json!({ "aidoc": {} });
+        assert_eq!(
+            llms_full_cap_from_workspace_metadata(&metadata).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cap_reads_positive_integer() {
+        let metadata = json!({ "aidoc": { "llms-full-max-bytes": 524288 } });
+        assert_eq!(
+            llms_full_cap_from_workspace_metadata(&metadata).unwrap(),
+            Some(524288)
+        );
+    }
+
+    #[test]
+    fn cap_rejects_zero_string_and_float() {
+        for bad in [json!(0), json!("500K"), json!(1.5), json!(-1)] {
+            let metadata = json!({ "aidoc": { "llms-full-max-bytes": bad } });
+            let err = llms_full_cap_from_workspace_metadata(&metadata).unwrap_err();
+            assert!(matches!(err, Error::Config { .. }), "got: {err}");
+        }
     }
 
     #[test]
